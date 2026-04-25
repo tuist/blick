@@ -11,7 +11,9 @@ pub enum BlickError {
     #[error("{0}")]
     MissingApiKey(String),
     #[error(transparent)]
-    Io(#[from] std::io::Error),
+    CliAgents(#[from] cli_agents::Error),
     #[error(transparent)]
-    Http(#[from] reqwest::Error),
+    GenAi(#[from] genai::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }

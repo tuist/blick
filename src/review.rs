@@ -1,12 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::BlickError;
-use crate::git::DiffBundle;
-
-pub struct ReviewPrompt<'a> {
-    pub system: &'a str,
-    pub user: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewReport {
@@ -50,50 +44,6 @@ impl Severity {
             Self::Low => "low",
         }
     }
-}
-
-pub fn build_prompt(base: &str, diff: &DiffBundle) -> ReviewPrompt<'static> {
-    let system = r#"You are Blick, a careful code review agent.
-
-Review the provided git diff for correctness issues, regressions, security problems, maintainability risks, and meaningful testing gaps.
-
-Return only valid JSON with this shape:
-{
-  "summary": "short summary",
-  "findings": [
-    {
-      "severity": "high|medium|low",
-      "file": "path/to/file",
-      "line": 123,
-      "title": "short issue title",
-      "body": "why this matters and what should change"
-    }
-  ]
-}
-
-If there are no meaningful findings, return:
-{"summary":"No findings.","findings":[]}
-
-Do not wrap the JSON in markdown fences."#;
-
-    let file_list = if diff.files.is_empty() {
-        "(git diff did not report any tracked files)".to_owned()
-    } else {
-        diff.files.join("\n")
-    };
-
-    let truncated_note = if diff.truncated {
-        "The diff was truncated to stay within the configured limit."
-    } else {
-        "The diff is complete."
-    };
-
-    let user = format!(
-        "Base revision: {base}\n{truncated_note}\n\nChanged files:\n{file_list}\n\nUnified diff:\n{}\n",
-        diff.diff
-    );
-
-    ReviewPrompt { system, user }
 }
 
 pub fn parse_report(raw: &str) -> Result<ReviewReport, BlickError> {

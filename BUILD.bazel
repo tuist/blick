@@ -11,6 +11,7 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     aliases = aliases(),
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
     deps = all_crate_deps(
         normal = True,
     ),
@@ -26,6 +27,7 @@ rust_binary(
     crate_root = "src/main.rs",
     edition = "2024",
     aliases = aliases(),
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
     deps = [":blick_lib"] + all_crate_deps(
         normal = True,
     ),
@@ -39,11 +41,31 @@ rust_test(
     name = "blick_test",
     crate = ":blick_lib",
     edition = "2024",
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(
+        normal_dev = True,
+    ),
+    proc_macro_deps = all_crate_deps(
+        proc_macro_dev = True,
+    ),
+)
+
+rust_test(
+    name = "git_integration_test",
+    srcs = ["tests/git_integration.rs"],
+    crate_name = "git_integration_test",
+    crate_root = "tests/git_integration.rs",
+    edition = "2024",
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":blick_lib"] + all_crate_deps(
         normal_dev = True,
     ),
     proc_macro_deps = all_crate_deps(

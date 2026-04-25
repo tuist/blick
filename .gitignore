@@ -1,6 +1,5 @@
-/.DS_Store
-/.idea
-/.vscode
-/bazel-*
+/dist
 /target
-.mise.local.toml
+/.shellspec-local
+/.shellspec-quick.log
+/bazel-*

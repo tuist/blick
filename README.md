@@ -1,55 +1,90 @@
 # blick
 
-`blick` is a Rust code review agent inspired by [getsentry/warden](https://github.com/getsentry/warden), but designed from the start around two things:
+`blick` reviews the diff in your repository with the hosted model or local coding agent you already use.
 
-- a native Rust implementation
-- configurable LLM provider and model selection
+## ✨ What You Can Do
 
-The first version focuses on local review of a Git diff. It loads a `blick.toml`, collects the diff against `HEAD` by default, sends a review prompt to the configured provider, and prints structured findings.
+- review local changes against `HEAD` or any git base
+- choose a hosted provider like OpenAI or Anthropic
+- use a local `claude` or `codex` binary when it is available
+- customize the review workflow with deterministic prompt steps plus LLM review steps
 
-## Why this shape?
+## 🚀 Install
 
-Warden is a great reference for developer experience: run locally, catch issues early, and keep the workflow repo-native. This project takes that same direction, but keeps the model layer open so you can choose OpenAI or Anthropic today and expand from there later.
-
-## Tooling
-
-- Rust `1.95.0`
-- Bazel `9.0.2` via Bazelisk
-- `mise` for local tool management
-
-Install the toolchain:
+For development in this repository:
 
 ```sh
 mise install
 ```
 
-Build and test:
+After a release is published, install the CLI from GitHub releases with Mise:
 
 ```sh
-cargo test
-bazelisk test //...
+mise use -g github:tuist/blick
 ```
 
-## Configuration
+## 🛠️ Quick Start
 
-Create a `blick.toml`:
+Create a starter config:
+
+```sh
+blick init
+```
+
+Review the current diff:
+
+```sh
+blick review
+```
+
+Review against a different base:
+
+```sh
+blick review --base origin/main
+```
+
+Emit JSON for scripts or CI:
+
+```sh
+blick review --json
+```
+
+## 🤖 Provider Setup
+
+Hosted providers:
 
 ```toml
 [llm]
 provider = "openai"
 model = "gpt-5"
-
-[review]
-base = "HEAD"
-max_diff_bytes = 120000
 ```
 
-Provider defaults:
+```toml
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+```
 
-- `openai` reads `OPENAI_API_KEY`
-- `anthropic` reads `ANTHROPIC_API_KEY`
+Local agent CLIs:
 
-You can also override the environment variable name or base URL:
+```toml
+[llm]
+provider = "claude"
+```
+
+```toml
+[llm]
+provider = "codex"
+```
+
+Auto-discover a local CLI if one is present:
+
+```toml
+[llm]
+provider = "auto"
+```
+
+You can also override the API key variable or base URL:
 
 ```toml
 [llm]
@@ -59,40 +94,73 @@ api_key_env = "MY_ANTHROPIC_TOKEN"
 base_url = "https://api.anthropic.com/v1"
 ```
 
-## Usage
+## 🧠 Workflow DSL
 
-Initialize a config file:
+`blick` ships with a default review workflow, but you can replace it in `blick.toml` when you want tighter instructions or a different review style.
 
-```sh
-cargo run -- init
+```toml
+[review]
+base = "HEAD"
+max_diff_bytes = 120000
+
+[[review.workflow.steps]]
+type = "prompt"
+role = "system"
+content = """
+You are Blick.
+Focus on correctness, regressions, and missing tests.
+Return JSON only.
+"""
+
+[[review.workflow.steps]]
+type = "prompt"
+role = "user"
+content = """
+Base revision: {{base}}
+{{truncated_note}}
+
+Changed files:
+{{files}}
+
+Unified diff:
+{{diff}}
+"""
+
+[[review.workflow.steps]]
+type = "llm_review"
 ```
 
-Review local changes:
+The current placeholders are `{{base}}`, `{{truncated_note}}`, `{{files}}`, and `{{diff}}`.
+
+## 🧪 Development
+
+Format the workspace:
 
 ```sh
-cargo run -- review
+mise run fmt
 ```
 
-Review against another base:
+Run the test suites:
 
 ```sh
-cargo run -- review --base origin/main
+mise run test
 ```
 
-Emit JSON instead of terminal-friendly output:
+That runs:
 
-```sh
-cargo run -- review --json
-```
+- temp-repo git integration coverage
+- workspace build/test coverage
+- ShellSpec end-to-end workflow checks with a fake local CLI
 
-## Current scope
+## 📦 Releases
 
-This is an intentionally small MVP:
+Releases are driven by conventional commits and `git-cliff`.
 
-- local diff review
-- configurable provider/model
-- OpenAI Responses API support
-- Anthropic Messages API support
-- Bazel + Cargo working from the same source tree
+- `mise run release:detect` checks whether `main` contains releasable changes
+- `mise run release:changelog` regenerates `CHANGELOG.md`
+- `.github/workflows/release.yml` packages release archives and publishes GitHub releases that Mise can install through the `github:` backend
 
-Good next steps would be GitHub PR review, reusable skills or rules, autofix flows, and richer output adapters.
+## 🫶 Credits
+
+- [getsentry/warden](https://github.com/getsentry/warden) shaped the local-review workflow and developer experience
+- [:req_llm](https://hex.pm/packages/req_llm) pushed the design toward configurable providers instead of provider-specific code paths

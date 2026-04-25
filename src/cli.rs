@@ -4,11 +4,16 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::config::ProviderKind;
 
+const CLI_VERSION: &str = match option_env!("BLICK_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Debug, Parser)]
 #[command(
     name = "blick",
-    version,
-    about = "A configurable Rust code review agent."
+    version = CLI_VERSION,
+    about = "A configurable code review agent."
 )]
 pub struct Cli {
     #[command(subcommand)]

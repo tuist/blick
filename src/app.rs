@@ -6,7 +6,8 @@ use crate::config::Config;
 use crate::error::BlickError;
 use crate::git::collect_diff;
 use crate::llm::client_from_config;
-use crate::review::{ReviewReport, build_prompt, parse_report, render_report};
+use crate::review::{ReviewReport, render_report};
+use crate::workflow::run_review_workflow;
 use clap::Parser;
 
 pub async fn run() -> Result<(), BlickError> {
@@ -50,10 +51,14 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
         return Ok(());
     }
 
-    let prompt = build_prompt(&config.review.base, &diff);
     let client = client_from_config(&config)?;
-    let raw = client.review(prompt.system, &prompt.user).await?;
-    let report = parse_report(&raw)?;
+    let report = run_review_workflow(
+        &*client,
+        &config.review.workflow,
+        &config.review.base,
+        &diff,
+    )
+    .await?;
 
     println!("{}", render_report(&report, args.json)?);
     Ok(())

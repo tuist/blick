@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 use crate::error::BlickError;
@@ -10,15 +11,30 @@ pub struct DiffBundle {
 }
 
 pub fn collect_diff(base: &str, max_diff_bytes: usize) -> Result<DiffBundle, BlickError> {
-    ensure_git_repo()?;
+    collect_diff_in(Path::new("."), base, max_diff_bytes)
+}
 
-    let has_base = has_revision(base)?;
-    let tracked_files = if has_base {
-        run_git(&["diff", "--name-only", "--find-renames", base])?
+pub fn collect_diff_in(
+    repo_root: &Path,
+    base: &str,
+    max_diff_bytes: usize,
+) -> Result<DiffBundle, BlickError> {
+    ensure_git_repo(repo_root)?;
+
+    let head_exists = has_revision(repo_root, "HEAD")?;
+    let base_exists = has_revision(repo_root, base)?;
+    if !base_exists && (head_exists || base != "HEAD") {
+        return Err(BlickError::Git(format!(
+            "git revision {base} was not found"
+        )));
+    }
+
+    let tracked_files = if base_exists {
+        run_git(repo_root, &["diff", "--name-only", "--find-renames", base])?
     } else {
         String::new()
     };
-    let untracked_files = run_git(&["ls-files", "--others", "--exclude-standard"])?;
+    let untracked_files = run_git(repo_root, &["ls-files", "--others", "--exclude-standard"])?;
 
     let mut files = tracked_files
         .lines()
@@ -32,8 +48,11 @@ pub fn collect_diff(base: &str, max_diff_bytes: usize) -> Result<DiffBundle, Bli
             .map(ToOwned::to_owned),
     );
 
-    let mut diff = if has_base {
-        run_git(&["diff", "--find-renames", "--no-ext-diff", base])?
+    let mut diff = if base_exists {
+        run_git(
+            repo_root,
+            &["diff", "--find-renames", "--no-ext-diff", base],
+        )?
     } else {
         String::new()
     };
@@ -42,8 +61,11 @@ pub fn collect_diff(base: &str, max_diff_bytes: usize) -> Result<DiffBundle, Bli
         .lines()
         .filter(|line| !line.trim().is_empty())
     {
-        let addition =
-            run_git_allow_exit_codes(&["diff", "--no-index", "--", "/dev/null", file], &[0, 1])?;
+        let addition = run_git_allow_exit_codes(
+            repo_root,
+            &["diff", "--no-index", "--", "/dev/null", file],
+            &[0, 1],
+        )?;
         diff.push_str(&addition);
         if !addition.ends_with('\n') {
             diff.push('\n');
@@ -59,8 +81,8 @@ pub fn collect_diff(base: &str, max_diff_bytes: usize) -> Result<DiffBundle, Bli
     })
 }
 
-fn ensure_git_repo() -> Result<(), BlickError> {
-    let output = Command::new("git")
+fn ensure_git_repo(repo_root: &Path) -> Result<(), BlickError> {
+    let output = git_command(repo_root)
         .args(["rev-parse", "--is-inside-work-tree"])
         .output()?;
 
@@ -69,16 +91,20 @@ fn ensure_git_repo() -> Result<(), BlickError> {
     }
 
     Err(BlickError::Git(
-        "blick review must run inside a Git working tree".to_owned(),
+        "blick review must run inside a git working tree".to_owned(),
     ))
 }
 
-fn run_git(args: &[&str]) -> Result<String, BlickError> {
-    run_git_allow_exit_codes(args, &[0])
+fn run_git(repo_root: &Path, args: &[&str]) -> Result<String, BlickError> {
+    run_git_allow_exit_codes(repo_root, args, &[0])
 }
 
-fn run_git_allow_exit_codes(args: &[&str], ok_codes: &[i32]) -> Result<String, BlickError> {
-    let output = Command::new("git").args(args).output()?;
+fn run_git_allow_exit_codes(
+    repo_root: &Path,
+    args: &[&str],
+    ok_codes: &[i32],
+) -> Result<String, BlickError> {
+    let output = git_command(repo_root).args(args).output()?;
 
     if ok_codes.contains(&output.status.code().unwrap_or_default()) {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
@@ -92,12 +118,18 @@ fn run_git_allow_exit_codes(args: &[&str], ok_codes: &[i32]) -> Result<String, B
     )))
 }
 
-fn has_revision(revision: &str) -> Result<bool, BlickError> {
-    let output = Command::new("git")
+fn has_revision(repo_root: &Path, revision: &str) -> Result<bool, BlickError> {
+    let output = git_command(repo_root)
         .args(["rev-parse", "--verify", revision])
         .output()?;
 
     Ok(output.status.success())
+}
+
+fn git_command(repo_root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(repo_root);
+    command
 }
 
 fn truncate(diff: String, max_diff_bytes: usize) -> (String, bool) {
@@ -113,23 +145,4 @@ fn truncate(diff: String, max_diff_bytes: usize) -> (String, bool) {
     let mut truncated = diff[..end].to_owned();
     truncated.push_str("\n\n... [diff truncated by blick]\n");
     (truncated, true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::truncate;
-
-    #[test]
-    fn leaves_small_diff_untouched() {
-        let (diff, truncated) = truncate("hello".to_owned(), 20);
-        assert_eq!(diff, "hello");
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn truncates_large_diff() {
-        let (diff, truncated) = truncate("abcdef".repeat(10), 12);
-        assert!(truncated);
-        assert!(diff.contains("[diff truncated by blick]"));
-    }
 }
