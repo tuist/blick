@@ -1,0 +1,6 @@
+/.DS_Store
+/.idea
+/.vscode
+/bazel-*
+/target
+.mise.local.toml
