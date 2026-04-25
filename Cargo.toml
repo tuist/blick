@@ -1,0 +1,17 @@
+[package]
+name = "blick"
+version = "0.1.0"
+edition = "2024"
+description = "A configurable code review agent inspired by Warden, built in Rust and Bazel."
+license = "Apache-2.0"
+repository = "https://github.com/tuist/blick"
+
+[dependencies]
+async-trait = "0.1.89"
+clap = { version = "4.5.39", features = ["derive"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+toml = "0.9.8"
