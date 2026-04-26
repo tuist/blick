@@ -7,7 +7,7 @@ use crate::config::{Config, ProviderKind};
 use crate::error::BlickError;
 
 use self::cli::CliReviewClient;
-use self::genai_client::GenAiReviewClient;
+use self::genai_client::GenAIReviewClient;
 
 #[async_trait]
 pub trait ReviewClient: Send + Sync {
@@ -16,8 +16,8 @@ pub trait ReviewClient: Send + Sync {
 
 pub fn client_from_config(config: &Config) -> Result<Box<dyn ReviewClient>, BlickError> {
     match config.llm.provider {
-        ProviderKind::OpenAi | ProviderKind::Anthropic => {
-            Ok(Box::new(GenAiReviewClient::new(&config.llm)?))
+        ProviderKind::OpenAI | ProviderKind::Anthropic => {
+            Ok(Box::new(GenAIReviewClient::new(&config.llm)?))
         }
         ProviderKind::Auto | ProviderKind::Claude | ProviderKind::Codex => {
             Ok(Box::new(CliReviewClient::new(&config.llm)))

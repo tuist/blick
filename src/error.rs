@@ -13,7 +13,7 @@ pub enum BlickError {
     #[error(transparent)]
     CliAgents(#[from] cli_agents::Error),
     #[error(transparent)]
-    GenAi(#[from] genai::Error),
+    GenAI(#[from] genai::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

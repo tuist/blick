@@ -7,13 +7,13 @@ use crate::config::{LlmConfig, ProviderKind};
 use crate::error::BlickError;
 use crate::llm::ReviewClient;
 
-pub struct GenAiReviewClient {
+pub struct GenAIReviewClient {
     client: Client,
     model: String,
     options: ChatOptions,
 }
 
-impl GenAiReviewClient {
+impl GenAIReviewClient {
     pub fn new(config: &LlmConfig) -> Result<Self, BlickError> {
         let model = qualified_model(config)?;
         let mut builder = Client::builder();
@@ -46,7 +46,7 @@ impl GenAiReviewClient {
 }
 
 #[async_trait]
-impl ReviewClient for GenAiReviewClient {
+impl ReviewClient for GenAIReviewClient {
     async fn review(&self, system_prompt: &str, user_prompt: &str) -> Result<String, BlickError> {
         let request =
             ChatRequest::new(vec![ChatMessage::user(user_prompt)]).with_system(system_prompt);
@@ -70,7 +70,7 @@ fn qualified_model(config: &LlmConfig) -> Result<String, BlickError> {
     };
 
     let qualified = match config.provider {
-        ProviderKind::OpenAi => format!("openai::{model}"),
+        ProviderKind::OpenAI => format!("openai::{model}"),
         ProviderKind::Anthropic => format!("anthropic::{model}"),
         ProviderKind::Auto | ProviderKind::Claude | ProviderKind::Codex => model.to_owned(),
     };

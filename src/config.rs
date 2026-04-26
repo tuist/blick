@@ -57,7 +57,7 @@ pub enum ProviderKind {
     Auto,
     #[serde(rename = "openai")]
     #[value(name = "openai")]
-    OpenAi,
+    OpenAI,
     #[serde(rename = "anthropic")]
     #[value(name = "anthropic")]
     Anthropic,
@@ -73,7 +73,7 @@ impl ProviderKind {
     pub fn default_model(self) -> Option<&'static str> {
         match self {
             Self::Auto => None,
-            Self::OpenAi => Some("gpt-5"),
+            Self::OpenAI => Some("gpt-5"),
             Self::Anthropic => Some("claude-sonnet-4-5"),
             Self::Claude => None,
             Self::Codex => None,
@@ -83,7 +83,7 @@ impl ProviderKind {
     pub fn default_api_key_env(self) -> Option<&'static str> {
         match self {
             Self::Auto | Self::Claude | Self::Codex => None,
-            Self::OpenAi => Some("OPENAI_API_KEY"),
+            Self::OpenAI => Some("OPENAI_API_KEY"),
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
         }
     }
@@ -91,7 +91,7 @@ impl ProviderKind {
     pub fn default_base_url(self) -> Option<&'static str> {
         match self {
             Self::Auto | Self::Claude | Self::Codex => None,
-            Self::OpenAi => Some("https://api.openai.com/v1"),
+            Self::OpenAI => Some("https://api.openai.com/v1"),
             Self::Anthropic => Some("https://api.anthropic.com/v1"),
         }
     }
@@ -178,7 +178,7 @@ impl Default for ReviewConfig {
 
 impl Default for ProviderKind {
     fn default() -> Self {
-        Self::OpenAi
+        Self::OpenAI
     }
 }
 
@@ -186,7 +186,7 @@ impl ProviderKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::OpenAi => "openai",
+            Self::OpenAI => "openai",
             Self::Anthropic => "anthropic",
             Self::Claude => "claude",
             Self::Codex => "codex",

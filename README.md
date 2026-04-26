@@ -1,3 +1,5 @@
+![blick header](docs/images/blick-header.png)
+
 # blick
 
 `blick` reviews the diff in your repository with the hosted model or local coding agent you already use.

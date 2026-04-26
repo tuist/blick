@@ -28,7 +28,7 @@ pub enum Commands {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    #[arg(long, value_enum, default_value_t = ProviderKind::OpenAi)]
+    #[arg(long, value_enum, default_value_t = ProviderKind::OpenAI)]
     pub provider: ProviderKind,
 
     #[arg(long)]

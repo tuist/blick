@@ -71,7 +71,7 @@ fn provider_cli(provider: ProviderKind) -> Option<CliName> {
         ProviderKind::Auto => None,
         ProviderKind::Claude => Some(CliName::Claude),
         ProviderKind::Codex => Some(CliName::Codex),
-        ProviderKind::OpenAi | ProviderKind::Anthropic => None,
+        ProviderKind::OpenAI | ProviderKind::Anthropic => None,
     }
 }
 
