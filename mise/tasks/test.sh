@@ -2,6 +2,6 @@
 #MISE description="Run the project test suites"
 set -euo pipefail
 
-cargo test
+cargo test --locked
 bazelisk test //...
 shellspec

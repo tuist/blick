@@ -2,4 +2,4 @@
 #MISE description="Format the workspace"
 set -euo pipefail
 
-cargo fmt --all
+bazelisk run @rules_rust//:rustfmt
