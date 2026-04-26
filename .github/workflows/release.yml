@@ -32,7 +32,6 @@ jobs:
         with:
           version: ${{ env.MISE_VERSION }}
           install_args: "git-cliff"
-          cache: "false"
       - name: Detect release
         id: detect
         run: mise run release:detect
@@ -57,7 +56,17 @@ jobs:
         with:
           version: ${{ env.MISE_VERSION }}
           install_args: "rust"
-          cache: "false"
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: bazel-${{ runner.os }}-${{ hashFiles('BUILD.bazel', 'MODULE.bazel', 'MODULE.bazel.lock') }}
+          restore-keys: |
+            bazel-${{ runner.os }}-
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
       - name: Package release archive
@@ -83,7 +92,6 @@ jobs:
         with:
           version: ${{ env.MISE_VERSION }}
           install_args: "git-cliff"
-          cache: "false"
       - uses: actions/download-artifact@v4
         with:
           path: dist
