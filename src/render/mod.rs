@@ -100,6 +100,34 @@ fn severity_badge(severity: Severity) -> String {
     )
 }
 
+/// Neutralize any literal `</details>` (case-insensitive) inside text that
+/// will be embedded in a `<details>` block, so an LLM-generated finding body
+/// can't accidentally close the wrapper early. We only touch this one
+/// substring rather than full HTML-escaping so code samples with `<T>` or
+/// `&` in finding bodies still render normally.
+fn neutralize_details_close(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let needle = b"</details";
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len()
+            && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            // Preserve original casing; just inject a backslash after `<`
+            // so the browser no longer sees a closing tag.
+            out.push('<');
+            out.push('\\');
+            out.push_str(&text[i + 1..i + needle.len()]);
+            i += needle.len();
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Collapsible block embedded in every inline finding comment so an AI agent
 /// asked to "address this comment" has a self-contained prompt — the
 /// finding's title, body, and location are duplicated *inside* the block so
@@ -123,10 +151,11 @@ fn agent_instructions(finding: &Finding) -> String {
          1. Open {location} and read the surrounding code so you understand the context before changing anything.\n\
          2. Fix the underlying issue described in *Details* above — do not silence the symptom (e.g. by suppressing a warning, catching and discarding an error, or deleting the test that surfaces it).\n\
          3. Run the project's existing test and lint commands and confirm they pass before reporting the task as complete.\n\
-         4. Keep the change minimal and focused on this finding; surface any unrelated concerns separately rather than bundling them in.\n\n\
+         4. Keep the change minimal and focused on this finding; surface any unrelated concerns separately rather than bundling them in.\n\
+         5. Once the fix is committed, if the `gh` CLI is available, mark this review thread as resolved so the human reviewer knows it's been addressed — use the GitHub GraphQL `resolveReviewThread` mutation via `gh api graphql` (look up the thread ID for this comment first).\n\n\
          </details>",
-        title = finding.title,
-        body = finding.body,
+        title = neutralize_details_close(&finding.title),
+        body = neutralize_details_close(&finding.body),
     )
 }
 
@@ -453,6 +482,23 @@ mod tests {
         // Body carries the last-reviewed marker so future runs can do
         // incremental reviews against the SHA we just reviewed.
         assert!(json.contains("blick:last-reviewed=deadbeef"));
+    }
+
+    #[test]
+    fn neutralizes_details_close_tag_in_embedded_text() {
+        // `</details>` in a finding body would close the wrapper early.
+        assert_eq!(
+            neutralize_details_close("see </details> here"),
+            "see <\\/details> here"
+        );
+        // Case-insensitive — LLMs sometimes uppercase tags.
+        assert_eq!(neutralize_details_close("</DETAILS>"), "<\\/DETAILS>");
+        // Code samples with unrelated `<T>` / `&` are left alone so they
+        // still render naturally inside the details block.
+        assert_eq!(
+            neutralize_details_close("use Vec<T> & avoid Box"),
+            "use Vec<T> & avoid Box"
+        );
     }
 
     #[test]
