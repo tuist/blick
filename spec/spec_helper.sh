@@ -47,16 +47,17 @@ EOF
 
   (
     cd "${REPO}" || exit 1
-    git init >/dev/null
-    git config user.name "Blick ShellSpec" >/dev/null
-    git config user.email "blick@example.com" >/dev/null
+    git -c init.defaultBranch=main init >/dev/null 2>&1
+    git config user.name "Blick ShellSpec" >/dev/null 2>&1
+    git config user.email "blick@example.com" >/dev/null 2>&1
+    git config commit.gpgsign false >/dev/null 2>&1
     cat > src/main.rs <<'EOF'
 fn main() {
     println!("hello");
 }
 EOF
-    git add src/main.rs
-    git commit -m "initial commit" >/dev/null
+    git add src/main.rs >/dev/null 2>&1
+    git commit -m "initial commit" >/dev/null 2>&1
     cat > src/main.rs <<'EOF'
 fn main() {
     println!("hello, blick");
@@ -157,11 +158,11 @@ EOF
 
   (
     cd "${REPO}" || exit 1
-    git add blick.toml apps/web/blick.toml apps/ios/blick.toml
+    git add blick.toml apps/web/blick.toml apps/ios/blick.toml >/dev/null 2>&1
     echo 'fn web() {}' > apps/web/src/lib.rs
     echo 'fn ios() {}' > apps/ios/src/lib.rs
-    git add apps/web/src/lib.rs apps/ios/src/lib.rs
-    git commit -m "add scopes" >/dev/null
+    git add apps/web/src/lib.rs apps/ios/src/lib.rs >/dev/null 2>&1
+    git commit -m "add scopes" >/dev/null 2>&1
     echo 'fn web_changed() {}' > apps/web/src/lib.rs
     echo 'fn ios_changed() {}' > apps/ios/src/lib.rs
   )
