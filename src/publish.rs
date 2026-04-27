@@ -58,8 +58,24 @@ pub fn publish(repo_root: &Path, args: PublishArgs) -> Result<(), BlickError> {
             }
             Ok(_) => {
                 let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
-                gh_api_post(&format!("repos/{}/pulls/{pr}/reviews", ctx.repo), &review)?;
-                eprintln!("✓ posted PR review on #{pr}");
+                let endpoint = format!("repos/{}/pulls/{pr}/reviews", ctx.repo);
+                match gh_api_post(&endpoint, &review) {
+                    Ok(()) => eprintln!("✓ posted PR review on #{pr}"),
+                    Err(BlickError::Api(msg)) if msg.contains("Line could not be resolved") => {
+                        // GitHub rejected at least one inline comment
+                        // because its line isn't in the PR diff as GitHub
+                        // computes it (edge of context, `\ No newline`
+                        // markers, or LLM-hallucinated lines). Retry without
+                        // inline comments — those findings are folded into
+                        // the body — so we still post *something* rather
+                        // than dropping the review.
+                        eprintln!("⚠ inline comments rejected ({msg}); retrying without them");
+                        let fallback = strip_inline_comments(&review)?;
+                        gh_api_post(&endpoint, &fallback)?;
+                        eprintln!("✓ posted PR review on #{pr} (without inline comments)");
+                    }
+                    Err(err) => return Err(err),
+                }
             }
             Err(err) => {
                 eprintln!(
@@ -126,6 +142,45 @@ fn read_event_payload() -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
+/// Rewrite a `github-review` payload with its inline `comments` array
+/// emptied and the rejected findings appended to the review `body`.
+fn strip_inline_comments(payload: &str) -> Result<String, BlickError> {
+    let mut value: Value = serde_json::from_str(payload)
+        .map_err(|err| BlickError::Api(format!("review payload is not valid JSON: {err}")))?;
+
+    let comments = value
+        .get("comments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if !comments.is_empty() {
+        let body = value
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned)
+            .unwrap_or_default();
+
+        let mut appended = body;
+        appended.push_str("\n\n#### Inline comments not posted\n");
+        appended
+            .push_str("_GitHub rejected one or more line comments; reproducing them here._\n\n");
+        for comment in &comments {
+            let path = comment.get("path").and_then(Value::as_str).unwrap_or("?");
+            let line = comment.get("line").and_then(Value::as_u64);
+            let body = comment.get("body").and_then(Value::as_str).unwrap_or("");
+            match line {
+                Some(line) => appended.push_str(&format!("**`{path}:{line}`**\n\n{body}\n\n")),
+                None => appended.push_str(&format!("**`{path}`**\n\n{body}\n\n")),
+            }
+        }
+        value["body"] = Value::String(appended);
+    }
+
+    value["comments"] = Value::Array(Vec::new());
+    Ok(serde_json::to_string(&value).expect("serializable"))
+}
+
 fn gh_api_post(api_path: &str, body: &str) -> Result<(), BlickError> {
     let mut child = Command::new("gh")
         .args([
@@ -158,10 +213,63 @@ fn gh_api_post(api_path: &str, body: &str) -> Result<(), BlickError> {
         .wait_with_output()
         .map_err(|err| BlickError::Api(format!("waiting on gh failed: {err}")))?;
     if !output.status.success() {
+        // `gh` writes the API response body to stdout (even on 4xx) and a
+        // short status line to stderr. Surface both so 422s tell us *why*.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(BlickError::Api(format!(
-            "gh api {api_path} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "gh api {api_path} failed: {} {}",
+            stderr.trim(),
+            stdout.trim(),
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn strip_inline_comments_folds_comments_into_body() {
+        let payload = json!({
+            "commit_id": "deadbeef",
+            "event": "COMMENT",
+            "body": "### Blick review\n\n1 finding.",
+            "comments": [
+                {
+                    "path": "src/foo.rs",
+                    "line": 42,
+                    "side": "RIGHT",
+                    "body": "**[low]** Title\n\nDetails."
+                }
+            ]
+        })
+        .to_string();
+
+        let stripped = strip_inline_comments(&payload).unwrap();
+        let value: Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(value["comments"].as_array().unwrap().len(), 0);
+        let body = value["body"].as_str().unwrap();
+        assert!(body.contains("Inline comments not posted"));
+        assert!(body.contains("`src/foo.rs:42`"));
+        assert!(body.contains("Details."));
+    }
+
+    #[test]
+    fn strip_inline_comments_is_a_noop_when_there_are_none() {
+        let payload = json!({
+            "commit_id": "deadbeef",
+            "event": "COMMENT",
+            "body": "### Blick review\n\nNo findings.",
+            "comments": []
+        })
+        .to_string();
+
+        let stripped = strip_inline_comments(&payload).unwrap();
+        let value: Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(value["body"], "### Blick review\n\nNo findings.");
+        assert_eq!(value["comments"].as_array().unwrap().len(), 0);
+    }
 }
