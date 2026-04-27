@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::{Command, Stdio};
 
 use async_trait::async_trait;
@@ -43,23 +42,16 @@ impl AgentRunner for OpencodeRunner {
             for arg in &extra {
                 command.arg(arg);
             }
-            command.stdin(Stdio::piped());
+            // opencode `run` accepts the prompt as a positional argument.
+            // Avoid stdin: opencode does not consume it for `run`.
+            command.arg(prompt.as_str());
+            command.stdin(Stdio::null());
             command.stdout(Stdio::piped());
             command.stderr(Stdio::piped());
 
-            let mut child = command
-                .spawn()
-                .map_err(|err| BlickError::Api(format!("failed to spawn {binary}: {err}")))?;
-
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(prompt.as_bytes()).map_err(|err| {
-                    BlickError::Api(format!("failed to write opencode stdin: {err}"))
-                })?;
-            }
-
-            let raw = child
-                .wait_with_output()
-                .map_err(|err| BlickError::Api(format!("opencode wait failed: {err}")))?;
+            let raw = command
+                .output()
+                .map_err(|err| BlickError::Api(format!("failed to run {binary}: {err}")))?;
 
             let stdout = String::from_utf8_lossy(&raw.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&raw.stderr).into_owned();
@@ -69,6 +61,17 @@ impl AgentRunner for OpencodeRunner {
                     "opencode exited with {}: {}",
                     raw.status,
                     stderr.trim()
+                )));
+            }
+
+            if stdout.trim().is_empty() {
+                let detail = if stderr.trim().is_empty() {
+                    "no stdout and no stderr — is the model authenticated?".to_owned()
+                } else {
+                    format!("no stdout. stderr: {}", stderr.trim())
+                };
+                return Err(BlickError::Api(format!(
+                    "opencode produced empty output: {detail}"
                 )));
             }
 

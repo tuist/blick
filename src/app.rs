@@ -9,11 +9,19 @@ use clap::Parser;
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::agent::{AgentRunner, runner_for};
-use crate::cli::{Cli, Commands, ConfigArgs, InitArgs, ReviewArgs};
+use crate::cli::{
+    Cli, Commands, ConfigArgs, InitArgs, PublishArgs as CliPublishArgs, RenderArgs, ReviewArgs,
+};
 use crate::config::{AgentConfig, AgentKind, ConfigFile, ScopeConfig};
 use crate::error::BlickError;
 use crate::git::{DiffBundle, collect_diff_in};
+use crate::publish::{self, PublishArgs};
+use crate::render::{self, RenderContext};
 use crate::review::{Finding, ReviewOutcome, ReviewReport, render_report, run_review};
+use crate::run_record::resolve_run_dir;
+use crate::run_record::{
+    RunManifest, TaskRecord, TaskRef, task_filename, write_manifest, write_task_record,
+};
 use crate::scope::{load_scopes, owner_for};
 
 pub async fn run() -> Result<(), BlickError> {
@@ -23,7 +31,42 @@ pub async fn run() -> Result<(), BlickError> {
         Commands::Init(args) => init(args),
         Commands::Review(args) => review(args).await,
         Commands::Config(args) => show_config(args),
+        Commands::Render(args) => render_run(args),
+        Commands::Publish(args) => publish_run(args),
     }
+}
+
+fn publish_run(args: CliPublishArgs) -> Result<(), BlickError> {
+    let repo_root = args
+        .repo
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()?;
+    publish::publish(
+        &repo_root,
+        PublishArgs {
+            run: args.run,
+            head_sha: args.head_sha,
+            repo: args.gh_repo,
+            pr: args.pr,
+        },
+    )
+}
+
+fn render_run(args: RenderArgs) -> Result<(), BlickError> {
+    let repo_root = args
+        .repo
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()?;
+    let run_dir = resolve_run_dir(&repo_root, args.run.as_deref())?;
+    let ctx = RenderContext {
+        head_sha: args.head_sha.as_deref(),
+        commit_sha: args.head_sha.as_deref(),
+    };
+    let rendered = render::render(&run_dir, args.format, ctx)?;
+    println!("{rendered}");
+    Ok(())
 }
 
 fn init(args: InitArgs) -> Result<(), BlickError> {
@@ -86,7 +129,8 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
         .max(1);
 
     let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let logs_dir = repo_root.join(".blick").join("runs").join(&run_id);
+    let runs_root = repo_root.join(".blick").join("runs");
+    let logs_dir = runs_root.join(&run_id);
     fs::create_dir_all(&logs_dir)?;
 
     let mut tasks: Vec<TaskInput> = Vec::new();
@@ -137,14 +181,16 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
 
     let stream_mode = args.stream;
     let logs_dir = Arc::new(logs_dir);
+    let run_id_arc = Arc::new(run_id.clone());
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
     let mut futures = FuturesUnordered::new();
     for task in tasks {
         let logs_dir = logs_dir.clone();
+        let run_id_arc = run_id_arc.clone();
         let permits = semaphore.clone();
         futures.push(async move {
             let _permit = permits.acquire_owned().await.expect("semaphore not closed");
-            execute_task(task, logs_dir).await
+            execute_task(task, run_id_arc, logs_dir).await
         });
     }
 
@@ -162,6 +208,21 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
         }
     }
 
+    let manifest = RunManifest {
+        run_id: run_id.clone(),
+        base: base.clone(),
+        tasks: completed
+            .iter()
+            .map(|r| TaskRef {
+                scope_label: r.scope_label.clone(),
+                review_name: r.review_name.clone(),
+                record: PathBuf::from(task_filename(&r.scope_label, &r.review_name)),
+            })
+            .collect(),
+    };
+    let _ = write_manifest(&logs_dir.join("manifest.json"), &manifest);
+    update_latest_pointer(&runs_root, &run_id);
+
     let combined = combine_reports(
         completed
             .into_iter()
@@ -170,6 +231,23 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
     );
     println!("{}", render_report(&combined, args.json)?);
     Ok(())
+}
+
+fn update_latest_pointer(runs_root: &Path, run_id: &str) {
+    let latest = runs_root.join("latest");
+    let _ = fs::remove_file(&latest);
+    let _ = fs::remove_dir_all(&latest);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let _ = symlink(run_id, &latest);
+    }
+    #[cfg(not(unix))]
+    {
+        // Fall back to writing the run-id into a plain text file so non-unix
+        // platforms can still resolve `latest`.
+        let _ = fs::write(&latest, run_id);
+    }
 }
 
 struct TaskInput {
@@ -187,10 +265,13 @@ struct TaskResult {
     review_name: String,
     outcome: ReviewOutcome,
     log_path: PathBuf,
+    #[allow(dead_code)]
+    record_path: PathBuf,
 }
 
 async fn execute_task(
     task: TaskInput,
+    run_id: Arc<String>,
     logs_dir: Arc<PathBuf>,
 ) -> Result<TaskResult, (String, BlickError)> {
     let label = format!("{}/{}", task.scope_label, task.review.name);
@@ -212,12 +293,25 @@ async fn execute_task(
     let log_path = logs_dir.join(log_name);
     let _ = write_task_log(&log_path, &label, &outcome);
 
+    let record = TaskRecord {
+        run_id: (*run_id).clone(),
+        scope_label: task.scope_label.clone(),
+        review_name: task.review.name.clone(),
+        base: task.base.clone(),
+        files: task.diff.files.clone(),
+        diff: task.diff.diff.clone(),
+        report: outcome.report.clone(),
+    };
+    let record_path = logs_dir.join(task_filename(&task.scope_label, &task.review.name));
+    let _ = write_task_record(&record_path, &record);
+
     Ok(TaskResult {
         scope_root: task.scope.root.clone(),
         scope_label: task.scope_label,
         review_name: task.review.name,
         outcome,
         log_path,
+        record_path,
     })
 }
 
