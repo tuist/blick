@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
   pull-requests: write
 
 env:
@@ -19,7 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Need full history to diff against the PR base.
           fetch-depth: 0
       - uses: jdx/mise-action@v4.0.1
         with:
@@ -28,10 +28,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Build blick from source
         run: cargo build --release --locked
-      - name: Verify tooling
-        run: |
-          ./target/release/blick --version
-          opencode --version || true
+
       - name: Run blick review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -42,9 +39,9 @@ jobs:
             echo "ANTHROPIC_API_KEY is not set — add it to repo secrets so opencode can authenticate." >&2
             exit 1
           fi
-          # The base ref is whatever the PR targets (typically `main`).
           base="origin/${{ github.event.pull_request.base.ref }}"
-          ./target/release/blick review --base "$base" --json --stream | tee blick-review.json
+          ./target/release/blick review --base "$base" --json --stream
+
       - name: Upload run logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -52,38 +49,41 @@ jobs:
           name: blick-runs
           path: .blick/runs/
           if-no-files-found: ignore
-      - name: Post review comment
+
+      - name: Post per-review check runs
         if: always()
-        uses: actions/github-script@v7
         env:
-          REVIEW_FILE: blick-review.json
-        with:
-          script: |
-            const fs = require('fs');
-            const path = process.env.REVIEW_FILE;
-            if (!fs.existsSync(path)) {
-              core.warning(`No review output at ${path}; skipping comment`);
-              return;
-            }
-            let report;
-            try {
-              report = JSON.parse(fs.readFileSync(path, 'utf8'));
-            } catch (e) {
-              core.warning(`Could not parse ${path}: ${e.message}`);
-              return;
-            }
-            const findings = report.findings || [];
-            const lines = [`### Blick review`, ``, `${report.summary || 'No summary.'}`];
-            if (findings.length > 0) {
-              lines.push('', '| Severity | File | Title |', '| --- | --- | --- |');
-              for (const f of findings) {
-                const loc = f.line ? `${f.file}:${f.line}` : f.file;
-                lines.push(`| ${f.severity} | \`${loc}\` | ${f.title} |`);
-              }
-            }
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: lines.join('\n'),
-            });
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -e .blick/runs/latest ]; then
+            echo "No run output to post; skipping." >&2
+            exit 0
+          fi
+          ./target/release/blick render --format=check-run --head-sha="$HEAD_SHA" |
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              printf '%s' "$line" |
+                gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
+                  -X POST -H "Accept: application/vnd.github+json" --input -
+            done
+
+      - name: Post resolvable PR review
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -e .blick/runs/latest ]; then
+            echo "No run output to post; skipping." >&2
+            exit 0
+          fi
+          ./target/release/blick render --format=github-review --head-sha="$HEAD_SHA" \
+            > review.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            -X POST -H "Accept: application/vnd.github+json" --input review.json

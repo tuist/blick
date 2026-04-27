@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::AgentKind;
+use crate::render::Format;
 
 const CLI_VERSION: &str = match option_env!("BLICK_VERSION") {
     Some(version) => version,
@@ -28,6 +29,9 @@ pub enum Commands {
     Review(ReviewArgs),
     /// Show the resolved configuration and which file each value came from.
     Config(ConfigArgs),
+    /// Render a previous run for a downstream destination (PR review, check
+    /// runs, markdown summary).
+    Render(RenderArgs),
 }
 
 #[derive(Debug, Args)]
@@ -86,6 +90,28 @@ pub struct ConfigArgs {
     /// Show provenance for every resolved field.
     #[arg(long)]
     pub explain: bool,
+
+    /// Repository root (defaults to current directory).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct RenderArgs {
+    /// Output format. `github-review` and `check-run` produce JSON for the
+    /// matching GitHub API endpoints; `github-summary` produces markdown.
+    #[arg(long, value_enum, default_value_t = Format::GithubSummary)]
+    pub format: Format,
+
+    /// Run id (e.g. `20260427T123456Z`), `latest`, or a directory path under
+    /// `.blick/runs/`. Defaults to `latest`.
+    #[arg(long)]
+    pub run: Option<String>,
+
+    /// Commit SHA the report applies to. Required for `github-review` and
+    /// `check-run`. Pass the PR head SHA in CI.
+    #[arg(long)]
+    pub head_sha: Option<String>,
 
     /// Repository root (defaults to current directory).
     #[arg(long)]

@@ -4,7 +4,9 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod git;
+pub mod render;
 pub mod review;
+pub mod run_record;
 pub mod scope;
 pub mod skill;
 
