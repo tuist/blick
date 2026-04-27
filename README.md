@@ -1,8 +1,10 @@
-![blick header](docs/images/blick-header.png)
+<img src="docs/images/blick-header.png" alt="blick header" width="384" align="left">
+
+<br clear="left">
 
 # blick
 
-`blick` is a code review agent that drives the coding CLI you already use — `claude`, `codex`, or `opencode` — over your repository's diff, then publishes the findings as resolvable PR review comments and per-review check runs.
+`blick` is a code review agent that drives the coding CLI you already use (`claude`, `codex`, or `opencode`) over your repository's diff, then publishes the findings as resolvable PR review comments and per-review check runs.
 
 It's designed for monorepos: any subdirectory can declare its own `blick.toml` to define its own reviews, agent, and skills, and changes are routed to the nearest scope automatically.
 
@@ -62,11 +64,11 @@ The `init` command writes a minimal `blick.toml`. Everything below is what you c
 
 Every `blick review` invocation:
 
-1. **Discovers scopes.** Walks the repo for every `blick.toml`. Each one defines a *scope* — the subtree it owns.
+1. **Discovers scopes.** Walks the repo for every `blick.toml`. Each one defines a *scope* - the subtree it owns.
 2. **Computes the diff** against the configured base (`HEAD` by default, or whatever you pass to `--base`).
 3. **Partitions changed files by scope.** Each file is owned by the nearest `blick.toml` walking upward from the file.
 4. **Runs reviews concurrently.** For every owning scope, every review defined there runs against the files in that scope. The agent CLI configured for that scope is invoked once per review.
-5. **Persists per-task records** to `.blick/runs/<run-id>/` — one JSON record + one log file per `(scope, review)` pair, plus a `manifest.json` and a `latest` symlink.
+5. **Persists per-task records** to `.blick/runs/<run-id>/` - one JSON record + one log file per `(scope, review)` pair, plus a `manifest.json` and a `latest` symlink.
 6. **Combines findings** into a single report on stdout (or JSON with `--json`).
 
 A separate `blick render` step transforms the persisted run into one of several downstream formats (PR review JSON, check-run JSON, markdown). Reviewing and rendering are decoupled so the same run can drive PR comments, status checks, Slack messages, and so on without re-invoking the agent.
@@ -97,7 +99,7 @@ fail_on = "high"
 prompt = "Focus on injection, auth, and data exposure."
 ```
 
-`agent` and `skills` cascade: a child `blick.toml` inherits them from its ancestor scopes. `reviews` are scope-local — each scope declares its own set, with no inheritance.
+`agent` and `skills` cascade: a child `blick.toml` inherits them from its ancestor scopes. `reviews` are scope-local - each scope declares its own set, with no inheritance.
 
 `blick config --explain` prints the effective configuration for every scope and which file each value came from.
 
@@ -121,7 +123,7 @@ subpath = "skills/owasp"                # optional: read this dir within the rep
 
 Remote skills are shallow-cloned into `~/.cache/blick/skills/<owner>/<repo>@<ref>/` on first use.
 
-The skill markdown body becomes part of the agent's system prompt. Anything you'd put in a "checklist" or "review template" works — the more concrete and example-driven, the better the findings.
+The skill markdown body becomes part of the agent's system prompt. Anything you'd put in a "checklist" or "review template" works - the more concrete and example-driven, the better the findings.
 
 ## Reviews
 
@@ -254,7 +256,7 @@ blick review --stream
 blick review --max-concurrency 8
 ```
 
-While the run executes, blick prints `▶ scope/review starting…` markers to stderr at launch and `✓ scope/review done (N findings) — log: …` blocks as each task completes. The final combined report (or `--json` payload) is the only thing on stdout.
+While the run executes, blick prints `▶ scope/review starting…` markers to stderr at launch and `✓ scope/review done (N findings) - log: …` blocks as each task completes. The final combined report (or `--json` payload) is the only thing on stdout.
 
 Each `(scope, review)` pair leaves three artifacts under `.blick/runs/<run-id>/`:
 
@@ -269,17 +271,17 @@ Each `(scope, review)` pair leaves three artifacts under `.blick/runs/<run-id>/`
 
 ## Rendering reports
 
-`blick render` transforms a run into a downstream format. It does *not* re-invoke the agent — it reads the persisted records.
+`blick render` transforms a run into a downstream format. It does *not* re-invoke the agent - it reads the persisted records.
 
 ```sh
 # Markdown summary, e.g. for `gh pr comment` or Slack
 blick render --format=github-summary
 
-# JSON for `POST /repos/{owner}/{repo}/pulls/{n}/reviews` — one resolvable
+# JSON for `POST /repos/{owner}/{repo}/pulls/{n}/reviews` - one resolvable
 # review thread for the entire run, with a line comment per in-diff finding
 blick render --format=github-review --head-sha=$SHA
 
-# JSON Lines for `POST /repos/{owner}/{repo}/check-runs` — one Check Run per
+# JSON Lines for `POST /repos/{owner}/{repo}/check-runs` - one Check Run per
 # (scope, review), each with annotations on in-diff findings
 blick render --format=check-run --head-sha=$SHA
 ```
@@ -315,11 +317,11 @@ The shape:
 
 Required permissions on the workflow: `checks: write`, `pull-requests: write`.
 
-The PR author can mark each individual line comment as resolved as they fix it — that's standard GitHub PR review behavior, and works because we're posting through the reviews API rather than as plain issue comments or check annotations.
+The PR author can mark each individual line comment as resolved as they fix it - that's standard GitHub PR review behavior, and works because we're posting through the reviews API rather than as plain issue comments or check annotations.
 
 ### Branding the check-run icon
 
-The icon next to each check run is the avatar of whatever identity creates it. With the default `${{ secrets.GITHUB_TOKEN }}`, that's the GitHub Actions octocat. To get the **Blick** logo on every check, register a public GitHub App, upload the Blick icon at registration time, and have users one-click install the App on their repo. The workflow then authenticates as the App via JWT → installation token. This is documented infrastructure ([GitHub docs](https://docs.github.com/en/apps/creating-github-apps)) but not currently shipped — open an issue if you'd like to drive it.
+The icon next to each check run is the avatar of whatever identity creates it. With the default `${{ secrets.GITHUB_TOKEN }}`, that's the GitHub Actions octocat. To get the **Blick** logo on every check, register a public GitHub App, upload the Blick icon at registration time, and have users one-click install the App on their repo. The workflow then authenticates as the App via JWT → installation token. This is documented infrastructure ([GitHub docs](https://docs.github.com/en/apps/creating-github-apps)) but not currently shipped - open an issue if you'd like to drive it.
 
 ## Development
 
@@ -332,12 +334,12 @@ mise run test           # cargo test + bazelisk test //... + shellspec
 
 Workspace layout:
 
-- `src/agent/` — adapters for `claude`, `codex`, `opencode`
-- `src/scope.rs` — multi-file `blick.toml` discovery and inheritance
-- `src/skill.rs` — skill resolution (local and GitHub)
-- `src/render/` — PR review / check-run / markdown renderers
-- `src/run_record.rs` — persistence of `.blick/runs/<id>/` artifacts
-- `spec/` — shellspec end-to-end tests with a fake codex binary
+- `src/agent/` - adapters for `claude`, `codex`, `opencode`
+- `src/scope.rs` - multi-file `blick.toml` discovery and inheritance
+- `src/skill.rs` - skill resolution (local and GitHub)
+- `src/render/` - PR review / check-run / markdown renderers
+- `src/run_record.rs` - persistence of `.blick/runs/<id>/` artifacts
+- `spec/` - shellspec end-to-end tests with a fake codex binary
 
 ## Releases
 
