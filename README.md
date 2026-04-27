@@ -118,7 +118,15 @@ name = "owasp"
 source = "tuist/blick-skills"           # GitHub <owner>/<repo> shorthand
 ref = "main"                            # optional: branch/tag/SHA
 subpath = "skills/owasp"                # optional: read this dir within the repo
+
+[[skills]]
+name = "frontend-design"
+source = "anthropics/skills/frontend-design"   # skills.sh shorthand: <owner>/<repo>/<skill>
 ```
+
+The 3-segment `<owner>/<repo>/<skill-name>` form matches the [skills.sh](https://skills.sh) convention — repos that publish a top-level `skills/` directory are resolved automatically (`<repo>/skills/<skill-name>`), with a fallback to `<repo>/<skill-name>` for repos that lay skills out at the root.
+
+For purely-local skills, you can also drop a directory at `.blick/skills/<name>/` next to your `blick.toml` and reference it by name from any review — no `[[skills]]` entry required. An explicit `[[skills]]` entry with the same name overrides the auto-discovered one.
 
 Remote skills are shallow-cloned into `~/.cache/blick/skills/<owner>/<repo>@<ref>/` on first use.
 
