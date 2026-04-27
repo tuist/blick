@@ -35,12 +35,12 @@ jobs:
 
       - name: Run blick review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "ANTHROPIC_API_KEY is not set; add it to repo secrets so opencode can authenticate." >&2
+          if [ -z "${FIREWORKS_API_KEY:-}" ]; then
+            echo "FIREWORKS_API_KEY is not set; add it to repo secrets so opencode can authenticate against Fireworks." >&2
             exit 1
           fi
           ./target/release/blick review \

@@ -47,9 +47,26 @@ pub fn publish(repo_root: &Path, args: PublishArgs) -> Result<(), BlickError> {
     );
 
     if let Some(pr) = ctx.pr {
-        let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
-        gh_api_post(&format!("repos/{}/pulls/{pr}/reviews", ctx.repo), &review)?;
-        eprintln!("✓ posted PR review on #{pr}");
+        // Don't fail the whole publish step on a counting error — the check
+        // runs are already up. Surface the warning and skip just the review
+        // post so the user still gets the per-review status.
+        match render::total_findings(&run_dir) {
+            Ok(0) => {
+                eprintln!(
+                    "ℹ no findings; skipping PR review post (check runs convey the pass status)"
+                );
+            }
+            Ok(_) => {
+                let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
+                gh_api_post(&format!("repos/{}/pulls/{pr}/reviews", ctx.repo), &review)?;
+                eprintln!("✓ posted PR review on #{pr}");
+            }
+            Err(err) => {
+                eprintln!(
+                    "⚠ could not count findings ({err}); skipping PR review post but check runs are already up"
+                );
+            }
+        }
     } else {
         eprintln!("ℹ no PR context detected; skipped PR review post");
     }

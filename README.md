@@ -257,16 +257,19 @@ blick review --max-concurrency 8
 
 While the run executes, blick prints `▶ scope/review starting…` markers to stderr at launch and `✓ scope/review done (N findings) - log: …` blocks as each task completes. The final combined report (or `--json` payload) is the only thing on stdout.
 
-Each `(scope, review)` pair leaves three artifacts under `.blick/runs/<run-id>/`:
+Each `(scope, review)` pair leaves four artifacts under `.blick/runs/<run-id>/`:
 
 ```
 .blick/runs/20260427T112634Z/
 ├── manifest.json
-├── apps_web--security.json     # structured task record (used by `blick render`)
-├── apps_web--security.log      # captured stdout/stderr/text
+├── apps_web--security.json       # structured task record (used by `blick render`)
+├── apps_web--security.log        # captured stdout/stderr/text
+├── apps_web--security.prompt.md  # the assembled system prompt (skills + overrides)
 └── …
 .blick/runs/latest -> 20260427T112634Z
 ```
+
+The `.prompt.md` file is the exact system prompt blick built and sent to the agent for that task. It's the easiest way to confirm a skill is actually being applied (open the file and grep for the skill content) and to debug why a review came back the way it did.
 
 ## Rendering reports
 
