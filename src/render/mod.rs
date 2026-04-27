@@ -48,10 +48,14 @@ pub fn render(
     }
 }
 
+/// Sum of findings across a slice of persisted task records.
+fn count_findings(records: &[TaskRecord]) -> usize {
+    records.iter().map(|r| r.report.findings.len()).sum()
+}
+
 /// Sum of findings across every persisted task in a run.
 pub fn total_findings(run_dir: &Path) -> Result<usize, BlickError> {
-    let records = list_task_records(run_dir)?;
-    Ok(records.iter().map(|r| r.report.findings.len()).sum())
+    Ok(count_findings(&list_task_records(run_dir)?))
 }
 
 /// Human label for a `(scope, review)` pair. Drops the `./` prefix when
@@ -85,11 +89,10 @@ fn render_github_review(
 
     let mut comments: Vec<Value> = Vec::new();
     let mut out_of_diff: Vec<&Finding> = Vec::new();
-    let mut total_findings = 0usize;
+    let total_findings = count_findings(records);
     let mut summary_lines: Vec<String> = Vec::new();
 
     for record in records {
-        total_findings += record.report.findings.len();
         let origin = origin_label(&record.scope_label, &record.review_name);
         let index = DiffLineIndex::from_unified(&record.diff);
 
