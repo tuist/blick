@@ -12,6 +12,24 @@ use crate::run_record::{TaskRecord, list_task_records};
 
 use self::diff_lines::DiffLineIndex;
 
+/// HTML-comment marker embedded in every PR review body so future runs can
+/// look up the SHA we last reviewed and only re-review what has changed since.
+pub const LAST_REVIEWED_MARKER_PREFIX: &str = "<!-- blick:last-reviewed=";
+pub const LAST_REVIEWED_MARKER_SUFFIX: &str = " -->";
+
+/// Extract the SHA encoded in a `blick:last-reviewed=<sha>` marker, if any.
+pub fn parse_last_reviewed_marker(body: &str) -> Option<String> {
+    let start = body.rfind(LAST_REVIEWED_MARKER_PREFIX)? + LAST_REVIEWED_MARKER_PREFIX.len();
+    let rest = &body[start..];
+    let end = rest.find(LAST_REVIEWED_MARKER_SUFFIX)?;
+    let sha = rest[..end].trim();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha.to_owned())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
     /// JSON for `POST /repos/.../pulls/{n}/reviews` — bundles every
@@ -101,7 +119,11 @@ fn render_github_review(
         }
     }
 
-    let body = build_review_body(records, total_findings, &summary_lines, &out_of_diff);
+    let mut body = build_review_body(records, total_findings, &summary_lines, &out_of_diff);
+    body.push_str("\n\n");
+    body.push_str(LAST_REVIEWED_MARKER_PREFIX);
+    body.push_str(commit_sha);
+    body.push_str(LAST_REVIEWED_MARKER_SUFFIX);
     let event = if total_findings == 0 {
         "COMMENT"
     } else if records
@@ -353,6 +375,20 @@ mod tests {
         // Out-of-diff finding ends up in the review body.
         assert!(json.contains("Findings outside this PR"));
         assert!(json.contains("docs/old.md"));
+        // Body carries the last-reviewed marker so future runs can do
+        // incremental reviews against the SHA we just reviewed.
+        assert!(json.contains("blick:last-reviewed=deadbeef"));
+    }
+
+    #[test]
+    fn parses_last_reviewed_marker_from_body() {
+        let body = "### Blick review\n\n…\n\n<!-- blick:last-reviewed=abc1234 -->";
+        assert_eq!(parse_last_reviewed_marker(body).as_deref(), Some("abc1234"));
+        assert!(parse_last_reviewed_marker("no marker here").is_none());
+        // When multiple markers are present (e.g. from edits), take the last one.
+        let body =
+            "<!-- blick:last-reviewed=oldsha -->\nlater\n<!-- blick:last-reviewed=newsha -->";
+        assert_eq!(parse_last_reviewed_marker(body).as_deref(), Some("newsha"));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::cli::{
 use crate::config::{AgentConfig, AgentKind, ConfigFile, ScopeConfig};
 use crate::error::BlickError;
 use crate::git::{DiffBundle, collect_diff_in};
+use crate::github::fetch_last_reviewed_sha;
 use crate::publish::{self, PublishArgs};
 use crate::render::{self, RenderContext};
 use crate::review::{Finding, ReviewOutcome, ReviewReport, render_report, run_review};
@@ -99,7 +100,14 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
 
     apply_agent_overrides(&mut scopes, args.agent, args.model.as_deref());
 
-    let base = resolve_base(&scopes, args.base.as_deref());
+    let configured_base = resolve_base(&scopes, args.base.as_deref());
+    let base = if args.base.is_some() {
+        // An explicit `--base` is honoured verbatim; the incremental marker
+        // is only consulted when blick is auto-detecting a base in CI.
+        configured_base
+    } else {
+        resolve_incremental_base(&repo_root, &configured_base)
+    };
     let max_diff = scopes
         .iter()
         .map(|s| s.defaults.max_diff_bytes)
@@ -533,6 +541,56 @@ fn apply_agent_overrides(
             scope.agent.model = Some(model_value.clone());
         }
     }
+}
+
+/// When running inside GitHub Actions on a pull request, look up the SHA of
+/// the previous blick review (encoded in a hidden marker on the review body)
+/// and use it as the diff base, so we only re-review what changed since.
+/// Falls back to `configured_base` whenever anything is missing or the SHA
+/// is not reachable in the local clone.
+fn resolve_incremental_base(repo_root: &Path, configured_base: &str) -> String {
+    let Some((repo, pr)) = detect_pr_context() else {
+        return configured_base.to_owned();
+    };
+
+    let sha = match fetch_last_reviewed_sha(&repo, pr) {
+        Ok(Some(sha)) => sha,
+        Ok(None) => return configured_base.to_owned(),
+        Err(err) => {
+            eprintln!(
+                "ℹ could not fetch prior blick reviews ({err}); falling back to {configured_base}"
+            );
+            return configured_base.to_owned();
+        }
+    };
+
+    if !revision_exists(repo_root, &sha) {
+        eprintln!(
+            "ℹ last-reviewed SHA {sha} is not reachable locally; falling back to {configured_base}"
+        );
+        return configured_base.to_owned();
+    }
+
+    eprintln!("▶ incremental review against last-reviewed SHA {sha}");
+    sha
+}
+
+fn detect_pr_context() -> Option<(String, u64)> {
+    let path = env::var("GITHUB_EVENT_PATH").ok()?;
+    let raw = fs::read_to_string(path).ok()?;
+    let event: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let pr = event.get("pull_request")?.get("number")?.as_u64()?;
+    let repo = env::var("GITHUB_REPOSITORY").ok()?;
+    Some((repo, pr))
+}
+
+fn revision_exists(repo_root: &Path, revision: &str) -> bool {
+    std::process::Command::new("git")
+        .current_dir(repo_root)
+        .args(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn resolve_base(scopes: &[ScopeConfig], cli_base: Option<&str>) -> String {
