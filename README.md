@@ -23,9 +23,8 @@ It's designed for monorepos: any subdirectory can declare its own `blick.toml` t
 9. [Running reviews](#running-reviews)
 10. [Rendering reports](#rendering-reports)
 11. [GitHub Actions integration](#-github-actions-integration)
-12. [Development](#development)
-13. [Releases](#releases)
-14. [Credits](#-credits)
+12. [Releases](#releases)
+13. [Credits](#-credits)
 
 ---
 
@@ -314,28 +313,6 @@ Required permissions on the workflow: `checks: write`, `pull-requests: write`.
 The PR author can mark each individual line comment as resolved as they fix it. That's standard GitHub PR review behavior, and works because we post through the reviews API rather than as plain issue comments or check annotations. Findings whose lines fall outside the PR's diff are surfaced in the review body so the API call doesn't 422.
 
 It's also worth scoping the workflow to PRs from branches inside the repository (`if: github.event.pull_request.head.repo.full_name == github.repository`). Forked PRs don't have access to repo secrets and shouldn't be reviewed by an LLM agent that can read the codebase before the change is trusted.
-
-### Branding the check-run icon
-
-The icon next to each check run is the avatar of whatever identity creates it. With the default `${{ secrets.GITHUB_TOKEN }}`, that's the GitHub Actions octocat. To get the **Blick** logo on every check, register a public GitHub App, upload the Blick icon at registration time, and have users one-click install the App on their repo. The workflow then authenticates as the App via JWT → installation token. This is documented infrastructure ([GitHub docs](https://docs.github.com/en/apps/creating-github-apps)) but not currently shipped - open an issue if you'd like to drive it.
-
-## Development
-
-```sh
-mise install            # install pinned toolchain
-mise run fmt            # rustfmt
-mise run build          # cargo + bazel build
-mise run test           # cargo test + bazelisk test //... + shellspec
-```
-
-Workspace layout:
-
-- `src/agent/` - adapters for `claude`, `codex`, `opencode`
-- `src/scope.rs` - multi-file `blick.toml` discovery and inheritance
-- `src/skill.rs` - skill resolution (local and GitHub)
-- `src/render/` - PR review / check-run / markdown renderers
-- `src/run_record.rs` - persistence of `.blick/runs/<id>/` artifacts
-- `spec/` - shellspec end-to-end tests with a fake codex binary
 
 ## Releases
 
