@@ -293,13 +293,19 @@ async fn execute_task(
     .await
     .map_err(|err| (label.clone(), err))?;
 
-    let log_name = format!(
-        "{}--{}.log",
+    let stem = format!(
+        "{}--{}",
         task.scope_label.replace('/', "_"),
         task.review.name
     );
-    let log_path = logs_dir.join(log_name);
+    let log_path = logs_dir.join(format!("{stem}.log"));
     let _ = write_task_log(&log_path, &label, &outcome);
+
+    // Persist the assembled system prompt alongside the log so contributors
+    // can verify which skills + overrides were actually composed for the
+    // agent. Also picked up by the `blick-runs` CI artifact.
+    let prompt_path = logs_dir.join(format!("{stem}.prompt.md"));
+    let _ = fs::write(&prompt_path, &outcome.system_prompt);
 
     let record = TaskRecord {
         run_id: (*run_id).clone(),

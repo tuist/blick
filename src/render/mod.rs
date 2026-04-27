@@ -66,6 +66,37 @@ pub fn render(
     }
 }
 
+/// Sum of findings across a slice of persisted task records.
+fn count_findings(records: &[TaskRecord]) -> usize {
+    records.iter().map(|r| r.report.findings.len()).sum()
+}
+
+/// Sum of findings across every persisted task in a run.
+pub fn total_findings(run_dir: &Path) -> Result<usize, BlickError> {
+    Ok(count_findings(&list_task_records(run_dir)?))
+}
+
+/// Human label for a `(scope, review)` pair. Drops the `./` prefix when
+/// the scope is the repo root so output reads "default" instead of
+/// "./default".
+fn origin_label(scope_label: &str, review_name: &str) -> String {
+    if scope_label == "." {
+        review_name.to_owned()
+    } else {
+        format!("{scope_label}/{review_name}")
+    }
+}
+
+fn severity_emoji(severity: Severity) -> &'static str {
+    match severity {
+        Severity::High => "🔴",
+        Severity::Medium => "🟠",
+        Severity::Low => "🔵",
+    }
+}
+
+const BLICK_FOOTER_LINK: &str = "[Blick](https://github.com/tuist/blick)";
+
 fn render_github_review(
     records: &[TaskRecord],
     ctx: RenderContext<'_>,
@@ -76,34 +107,38 @@ fn render_github_review(
 
     let mut comments: Vec<Value> = Vec::new();
     let mut out_of_diff: Vec<&Finding> = Vec::new();
-    let mut total_findings = 0usize;
+    let total_findings = count_findings(records);
     let mut summary_lines: Vec<String> = Vec::new();
 
     for record in records {
-        total_findings += record.report.findings.len();
+        let origin = origin_label(&record.scope_label, &record.review_name);
         let index = DiffLineIndex::from_unified(&record.diff);
 
-        summary_lines.push(format!(
-            "**{}/{}** — {} ({} finding{})",
-            record.scope_label,
-            record.review_name,
-            record.report.summary,
-            record.report.findings.len(),
-            if record.report.findings.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ));
+        // Only mention reviews that actually contributed findings; otherwise
+        // the body just repeats the "No findings" header.
+        if !record.report.findings.is_empty() {
+            summary_lines.push(format!(
+                "**{} review** - {} ({} finding{})",
+                origin,
+                record.report.summary,
+                record.report.findings.len(),
+                if record.report.findings.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
 
         for finding in &record.report.findings {
             let body = format!(
-                "**[{}]** {}\n\n{}\n\n_Reported by `{}/{}`._",
-                finding.severity.as_str(),
+                "{} **{} · {}**\n\n{}\n\n— {} · `{}` review",
+                severity_emoji(finding.severity),
+                finding.severity.label(),
                 finding.title,
                 finding.body,
-                record.scope_label,
-                record.review_name
+                BLICK_FOOTER_LINK,
+                origin,
             );
             match finding.line {
                 Some(line) if index.contains(&finding.file, line) => {
@@ -177,8 +212,9 @@ fn build_review_body(
                 None => format!("`{}`", finding.file),
             };
             body.push_str(&format!(
-                "- **[{}]** {} — {}\n",
-                finding.severity.as_str(),
+                "- {} **{}** {} - {}\n",
+                severity_emoji(finding.severity),
+                finding.severity.label(),
                 location,
                 finding.title
             ));
@@ -226,13 +262,14 @@ fn render_check_runs(records: &[TaskRecord], ctx: RenderContext<'_>) -> Result<S
                 "s"
             }
         );
+        let origin = origin_label(&record.scope_label, &record.review_name);
         let payload = json!({
-            "name": format!("blick / {}/{}", record.scope_label, record.review_name),
+            "name": format!("blick / {origin}"),
             "head_sha": head_sha,
             "status": "completed",
             "conclusion": conclusion,
             "output": {
-                "title": format!("{} — {}", record.review_name, conclusion),
+                "title": format!("{origin} review · {conclusion}"),
                 "summary": summary,
                 "annotations": annotations,
             },
@@ -263,11 +300,9 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
     }
 
     for record in records {
+        let origin = origin_label(&record.scope_label, &record.review_name);
         lines.push(String::new());
-        lines.push(format!(
-            "#### {}/{}",
-            record.scope_label, record.review_name
-        ));
+        lines.push(format!("#### {origin} review"));
         lines.push(record.report.summary.clone());
         if !record.report.findings.is_empty() {
             lines.push(String::new());
@@ -279,8 +314,9 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
                     None => format!("`{}`", finding.file),
                 };
                 lines.push(format!(
-                    "| {} | {} | {} |",
-                    finding.severity.as_str(),
+                    "| {} {} | {} | {} |",
+                    severity_emoji(finding.severity),
+                    finding.severity.label(),
                     location,
                     finding.title
                 ));
@@ -372,6 +408,9 @@ mod tests {
         assert!(json.contains("\"commit_id\": \"deadbeef\""));
         assert!(json.contains("\"path\": \"src/main.rs\""));
         assert!(json.contains("\"line\": 2"));
+        // Inline comment uses the medium emoji and links to Blick.
+        assert!(json.contains("🟠"));
+        assert!(json.contains("[Blick]"));
         // Out-of-diff finding ends up in the review body.
         assert!(json.contains("Findings outside this PR"));
         assert!(json.contains("docs/old.md"));
@@ -389,6 +428,12 @@ mod tests {
         let body =
             "<!-- blick:last-reviewed=oldsha -->\nlater\n<!-- blick:last-reviewed=newsha -->";
         assert_eq!(parse_last_reviewed_marker(body).as_deref(), Some("newsha"));
+    }
+
+    #[test]
+    fn origin_label_drops_root_dot() {
+        assert_eq!(origin_label(".", "default"), "default");
+        assert_eq!(origin_label("apps/web", "security"), "apps/web/security");
     }
 
     #[test]

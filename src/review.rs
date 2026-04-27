@@ -39,6 +39,10 @@ pub struct Finding {
 pub struct ReviewOutcome {
     pub report: ReviewReport,
     pub run: RunOutput,
+    /// The assembled system prompt sent to the agent — persisted alongside
+    /// the log so contributors can confirm skill bodies and overrides made
+    /// it in.
+    pub system_prompt: String,
 }
 
 /// Runs a single review (named bundle of skills) for one scope.
@@ -56,7 +60,11 @@ pub async fn run_review(
 
     let run = runner.run(&system_prompt, &user_prompt).await?;
     let report = parse_report(&run.text)?;
-    Ok(ReviewOutcome { report, run })
+    Ok(ReviewOutcome {
+        report,
+        run,
+        system_prompt,
+    })
 }
 
 fn collect_skills(
@@ -212,7 +220,7 @@ pub fn render_report(report: &ReviewReport, as_json: bool) -> Result<String, Bli
         lines.push(format!(
             "{}. [{}] {} - {}",
             index + 1,
-            finding.severity.as_str(),
+            finding.severity.label(),
             location,
             finding.title
         ));
@@ -290,6 +298,6 @@ mod tests {
             }],
         };
         let rendered = render_report(&report, false).expect("human output should render");
-        assert!(rendered.contains("[medium] src/main.rs:8"));
+        assert!(rendered.contains("[Medium] src/main.rs:8"));
     }
 }

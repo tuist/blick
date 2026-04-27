@@ -47,23 +47,41 @@ pub fn publish(repo_root: &Path, args: PublishArgs) -> Result<(), BlickError> {
     );
 
     if let Some(pr) = ctx.pr {
-        let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
-        let endpoint = format!("repos/{}/pulls/{pr}/reviews", ctx.repo);
-        match gh_api_post(&endpoint, &review) {
-            Ok(()) => eprintln!("✓ posted PR review on #{pr}"),
-            Err(BlickError::Api(msg)) if msg.contains("Line could not be resolved") => {
-                // GitHub rejected at least one inline comment because its
-                // line isn't in the PR diff as GitHub computes it (this can
-                // happen at the edge of context, on `\ No newline` markers,
-                // or when the LLM hallucinates a line). Retry without inline
-                // comments — those findings are folded into the body — so we
-                // still post *something* rather than dropping the review.
-                eprintln!("⚠ inline comments rejected ({msg}); retrying without them");
-                let fallback = strip_inline_comments(&review)?;
-                gh_api_post(&endpoint, &fallback)?;
-                eprintln!("✓ posted PR review on #{pr} (without inline comments)");
+        // Don't fail the whole publish step on a counting error — the check
+        // runs are already up. Surface the warning and skip just the review
+        // post so the user still gets the per-review status.
+        match render::total_findings(&run_dir) {
+            Ok(0) => {
+                eprintln!(
+                    "ℹ no findings; skipping PR review post (check runs convey the pass status)"
+                );
             }
-            Err(err) => return Err(err),
+            Ok(_) => {
+                let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
+                let endpoint = format!("repos/{}/pulls/{pr}/reviews", ctx.repo);
+                match gh_api_post(&endpoint, &review) {
+                    Ok(()) => eprintln!("✓ posted PR review on #{pr}"),
+                    Err(BlickError::Api(msg)) if msg.contains("Line could not be resolved") => {
+                        // GitHub rejected at least one inline comment
+                        // because its line isn't in the PR diff as GitHub
+                        // computes it (edge of context, `\ No newline`
+                        // markers, or LLM-hallucinated lines). Retry without
+                        // inline comments — those findings are folded into
+                        // the body — so we still post *something* rather
+                        // than dropping the review.
+                        eprintln!("⚠ inline comments rejected ({msg}); retrying without them");
+                        let fallback = strip_inline_comments(&review)?;
+                        gh_api_post(&endpoint, &fallback)?;
+                        eprintln!("✓ posted PR review on #{pr} (without inline comments)");
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "⚠ could not count findings ({err}); skipping PR review post but check runs are already up"
+                );
+            }
         }
     } else {
         eprintln!("ℹ no PR context detected; skipped PR review post");
