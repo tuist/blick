@@ -70,7 +70,9 @@ impl AgentRunner for OpencodeRunner {
                 } else {
                     format!("no stdout. stderr: {}", stderr.trim())
                 };
-                return Err(BlickError::Api(format!("opencode produced empty output: {detail}")));
+                return Err(BlickError::Api(format!(
+                    "opencode produced empty output: {detail}"
+                )));
             }
 
             Ok(RunOutput {
