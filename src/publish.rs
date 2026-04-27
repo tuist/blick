@@ -141,9 +141,14 @@ fn gh_api_post(api_path: &str, body: &str) -> Result<(), BlickError> {
         .wait_with_output()
         .map_err(|err| BlickError::Api(format!("waiting on gh failed: {err}")))?;
     if !output.status.success() {
+        // `gh` writes the API response body to stdout (even on 4xx) and a
+        // short status line to stderr. Surface both so 422s tell us *why*.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(BlickError::Api(format!(
-            "gh api {api_path} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "gh api {api_path} failed: {} {}",
+            stderr.trim(),
+            stdout.trim(),
         )));
     }
     Ok(())
