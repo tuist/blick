@@ -1,0 +1,6 @@
+/dist
+/target
+/.shellspec-local
+/.shellspec-quick.log
+/bazel-*
+.blick/

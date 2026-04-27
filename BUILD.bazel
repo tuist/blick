@@ -1,0 +1,91 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_binary",
+    "rust_library",
+    "rust_lint_config",
+    "rust_test",
+)
+
+rust_lint_config(
+    name = "blick_lints",
+    rustc = {
+        "warnings": "deny",
+    },
+)
+
+rust_library(
+    name = "blick_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "blick",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    aliases = aliases(),
+    lint_config = ":blick_lints",
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
+    deps = all_crate_deps(
+        normal = True,
+    ),
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "blick",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    aliases = aliases(),
+    lint_config = ":blick_lints",
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
+    deps = [":blick_lib"] + all_crate_deps(
+        normal = True,
+    ),
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "blick_test",
+    crate = ":blick_lib",
+    edition = "2024",
+    lint_config = ":blick_lints",
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal_dev = True,
+    ),
+    proc_macro_deps = all_crate_deps(
+        proc_macro_dev = True,
+    ),
+)
+
+rust_test(
+    name = "git_integration_test",
+    srcs = ["tests/git_integration.rs"],
+    crate_name = "git_integration_test",
+    crate_root = "tests/git_integration.rs",
+    edition = "2024",
+    lint_config = ":blick_lints",
+    rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":blick_lib"] + all_crate_deps(
+        normal_dev = True,
+    ),
+    proc_macro_deps = all_crate_deps(
+        proc_macro_dev = True,
+    ),
+)
