@@ -87,12 +87,80 @@ fn origin_label(scope_label: &str, review_name: &str) -> String {
     }
 }
 
-fn severity_emoji(severity: Severity) -> &'static str {
-    match severity {
-        Severity::High => "🔴",
-        Severity::Medium => "🟠",
-        Severity::Low => "🔵",
+/// Codex-style shields.io priority badge. `<sub><sub>` shrinks the badge so
+/// it sits inline with text without dominating the line.
+fn severity_badge(severity: Severity) -> String {
+    let (priority, color) = match severity {
+        Severity::High => ("P1", "red"),
+        Severity::Medium => ("P2", "yellow"),
+        Severity::Low => ("P3", "green"),
+    };
+    format!(
+        "<sub><sub>![{priority} Badge](https://img.shields.io/badge/{priority}-{color}?style=flat)</sub></sub>"
+    )
+}
+
+/// Neutralize any literal `</details>` (case-insensitive) inside text that
+/// will be embedded in a `<details>` block, so an LLM-generated finding body
+/// can't accidentally close the wrapper early. We only touch this one
+/// substring rather than full HTML-escaping so code samples with `<T>` or
+/// `&` in finding bodies still render normally.
+fn neutralize_details_close(text: &str) -> String {
+    let needle = b"</details";
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut i = 0;
+    // The needle is pure ASCII, so any byte that matches its first byte
+    // (`<`, 0x3C) is guaranteed to sit on a UTF-8 char boundary — we can
+    // safely slice `text[..]` at match positions and copy unmatched runs
+    // as string slices, which preserves multi-byte content (emoji, CJK,
+    // accents) exactly.
+    while i + needle.len() <= bytes.len() {
+        if bytes[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            out.push_str(&text[last..i]);
+            out.push('<');
+            out.push('\\');
+            out.push_str(&text[i + 1..i + needle.len()]);
+            i += needle.len();
+            last = i;
+        } else {
+            i += 1;
+        }
     }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// Collapsible block embedded in every inline finding comment so an AI agent
+/// asked to "address this comment" has a self-contained prompt — the
+/// finding's title, body, and location are duplicated *inside* the block so
+/// an agent that grabs only the `<details>` content still has everything it
+/// needs. Hidden behind a summary by default so the human reviewer doesn't
+/// see the duplication unless they expand it.
+fn agent_instructions(finding: &Finding) -> String {
+    let location = match finding.line {
+        Some(line) => format!("`{}:{line}`", finding.file),
+        None => format!("`{}`", finding.file),
+    };
+    format!(
+        "<details>\n\
+         <summary>🤖 Instructions for AI agents</summary>\n\n\
+         You are an AI agent asked to address a code review finding. Treat this block as your prompt.\n\n\
+         **Finding:** {title}\n\n\
+         **Details:**\n\n\
+         {body}\n\n\
+         **Location:** {location}\n\n\
+         **How to fix:**\n\n\
+         1. Open {location} and read the surrounding code so you understand the context before changing anything.\n\
+         2. Fix the underlying issue described in *Details* above — do not silence the symptom (e.g. by suppressing a warning, catching and discarding an error, or deleting the test that surfaces it).\n\
+         3. Run the project's existing test and lint commands and confirm they pass before reporting the task as complete.\n\
+         4. Keep the change minimal and focused on this finding; surface any unrelated concerns separately rather than bundling them in.\n\
+         5. Once the fix is committed, if the `gh` CLI is available, mark this review thread as resolved so the human reviewer knows it's been addressed — use the GitHub GraphQL `resolveReviewThread` mutation via `gh api graphql` (look up the thread ID for this comment first).\n\n\
+         </details>",
+        title = neutralize_details_close(&finding.title),
+        body = neutralize_details_close(&finding.body),
+    )
 }
 
 const BLICK_FOOTER_LINK: &str = "[Blick](https://github.com/tuist/blick)";
@@ -132,11 +200,11 @@ fn render_github_review(
 
         for finding in &record.report.findings {
             let body = format!(
-                "{} **{} · {}**\n\n{}\n\n— {} · `{}` review",
-                severity_emoji(finding.severity),
-                finding.severity.label(),
+                "{} **{}**\n\n{}\n\n{}\n\n— {} · `{}` review",
+                severity_badge(finding.severity),
                 finding.title,
                 finding.body,
+                agent_instructions(finding),
                 BLICK_FOOTER_LINK,
                 origin,
             );
@@ -212,9 +280,8 @@ fn build_review_body(
                 None => format!("`{}`", finding.file),
             };
             body.push_str(&format!(
-                "- {} **{}** {} - {}\n",
-                severity_emoji(finding.severity),
-                finding.severity.label(),
+                "- {} {} - {}\n",
+                severity_badge(finding.severity),
                 location,
                 finding.title
             ));
@@ -306,7 +373,7 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
         lines.push(record.report.summary.clone());
         if !record.report.findings.is_empty() {
             lines.push(String::new());
-            lines.push("| Severity | File | Title |".to_owned());
+            lines.push("| Priority | File | Title |".to_owned());
             lines.push("| --- | --- | --- |".to_owned());
             for finding in &record.report.findings {
                 let location = match finding.line {
@@ -314,9 +381,8 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
                     None => format!("`{}`", finding.file),
                 };
                 lines.push(format!(
-                    "| {} {} | {} | {} |",
-                    severity_emoji(finding.severity),
-                    finding.severity.label(),
+                    "| {} | {} | {} |",
+                    severity_badge(finding.severity),
                     location,
                     finding.title
                 ));
@@ -408,15 +474,43 @@ mod tests {
         assert!(json.contains("\"commit_id\": \"deadbeef\""));
         assert!(json.contains("\"path\": \"src/main.rs\""));
         assert!(json.contains("\"line\": 2"));
-        // Inline comment uses the medium emoji and links to Blick.
-        assert!(json.contains("🟠"));
+        // Inline comment uses the P2 (medium) priority badge and links to Blick.
+        assert!(json.contains("P2-yellow"));
         assert!(json.contains("[Blick]"));
+        // Inline comments embed agent instructions in a collapsed <details>.
+        assert!(json.contains("Instructions for AI agents"));
+        assert!(json.contains("src/main.rs:2"));
         // Out-of-diff finding ends up in the review body.
         assert!(json.contains("Findings outside this PR"));
         assert!(json.contains("docs/old.md"));
         // Body carries the last-reviewed marker so future runs can do
         // incremental reviews against the SHA we just reviewed.
         assert!(json.contains("blick:last-reviewed=deadbeef"));
+    }
+
+    #[test]
+    fn neutralizes_details_close_tag_in_embedded_text() {
+        // `</details>` in a finding body would close the wrapper early.
+        assert_eq!(
+            neutralize_details_close("see </details> here"),
+            "see <\\/details> here"
+        );
+        // Case-insensitive — LLMs sometimes uppercase tags.
+        assert_eq!(neutralize_details_close("</DETAILS>"), "<\\/DETAILS>");
+        // Code samples with unrelated `<T>` / `&` are left alone so they
+        // still render naturally inside the details block.
+        assert_eq!(
+            neutralize_details_close("use Vec<T> & avoid Box"),
+            "use Vec<T> & avoid Box"
+        );
+        // Multi-byte UTF-8 (emoji, CJK, accents) must be preserved verbatim
+        // alongside any neutralized close tag — earlier byte-by-byte
+        // implementation corrupted these.
+        assert_eq!(
+            neutralize_details_close("héllo 日本語 🦀 </details> tail"),
+            "héllo 日本語 🦀 <\\/details> tail"
+        );
+        assert_eq!(neutralize_details_close("日本語"), "日本語");
     }
 
     #[test]
