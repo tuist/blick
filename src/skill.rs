@@ -48,7 +48,10 @@ fn resolve_source(skill: &ResolvedSkillEntry) -> Result<PathBuf, BlickError> {
         return Ok(resolved);
     }
 
-    // Treat as `owner/repo` (or `owner/repo/path/within`) GitHub shorthand.
+    // Treat as `owner/repo` (or `owner/repo/skill-name`) GitHub shorthand.
+    // The 3-segment form matches the skills.sh convention — repos publish
+    // skills under a top-level `skills/` directory, so `anthropics/skills/foo`
+    // resolves to `<repo>/skills/foo` when present, falling back to `<repo>/foo`.
     let parts: Vec<&str> = source.splitn(3, '/').collect();
     if parts.len() < 2 {
         return Err(BlickError::Config(format!(
@@ -57,7 +60,7 @@ fn resolve_source(skill: &ResolvedSkillEntry) -> Result<PathBuf, BlickError> {
     }
     let owner = parts[0];
     let repo = parts[1];
-    let inner_subpath = parts.get(2).map(|s| s.to_string());
+    let inner = parts.get(2).map(|s| s.to_string());
     let git_ref = skill.entry.r#ref.as_deref().unwrap_or("HEAD");
 
     let cache_dir = cache_root()?.join("skills").join(owner).join(format!(
@@ -69,11 +72,23 @@ fn resolve_source(skill: &ResolvedSkillEntry) -> Result<PathBuf, BlickError> {
         clone(owner, repo, git_ref, &cache_dir)?;
     }
 
-    Ok(if let Some(sub) = inner_subpath {
-        cache_dir.join(sub)
-    } else {
-        cache_dir
+    Ok(match inner {
+        Some(rest) => resolve_skills_sh_inner(&cache_dir, &rest),
+        None => cache_dir,
     })
+}
+
+/// Pick the on-disk directory for the 3rd segment of an `owner/repo/<rest>`
+/// shorthand. Repos that follow the skills.sh layout publish skills under a
+/// top-level `skills/` directory, so prefer `<repo>/skills/<rest>`. Fall back
+/// to `<repo>/<rest>` for repos that lay skills out at the root.
+fn resolve_skills_sh_inner(cache_dir: &Path, rest: &str) -> PathBuf {
+    let nested = cache_dir.join("skills").join(rest);
+    if nested.exists() {
+        nested
+    } else {
+        cache_dir.join(rest)
+    }
 }
 
 fn is_local_path(source: &str) -> bool {
@@ -185,6 +200,21 @@ mod tests {
         let loaded = load(&entry).expect("local skill should load");
         assert_eq!(loaded.name, "my-skill");
         assert!(loaded.body.contains("Review body content"));
+    }
+
+    #[test]
+    fn skills_sh_inner_prefers_skills_subdir() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("skills/foo")).unwrap();
+        let resolved = resolve_skills_sh_inner(tmp.path(), "foo");
+        assert_eq!(resolved, tmp.path().join("skills/foo"));
+    }
+
+    #[test]
+    fn skills_sh_inner_falls_back_to_root_when_no_skills_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let resolved = resolve_skills_sh_inner(tmp.path(), "foo");
+        assert_eq!(resolved, tmp.path().join("foo"));
     }
 
     #[test]

@@ -5,11 +5,12 @@ use walkdir::WalkDir;
 
 use crate::config::{
     AgentConfig, AgentKind, ConfigFile, EffectiveDefaults, ProvenanceEntry, ResolvedSkillEntry,
-    ReviewEntry, ScopeConfig, Severity,
+    ReviewEntry, ScopeConfig, Severity, SkillEntry,
 };
 use crate::error::BlickError;
 
 const CONFIG_NAME: &str = "blick.toml";
+const LOCAL_SKILLS_DIR: &str = ".blick/skills";
 
 /// Discover every `blick.toml` reachable from `repo_root` (including the
 /// root itself if present), producing one resolved [`ScopeConfig`] per file.
@@ -103,6 +104,17 @@ fn build_scope(
             agent = Some(file_agent.clone());
             agent_source = Some(source.to_path_buf());
         }
+        // Auto-discovered local skills come first so an explicit [[skills]]
+        // entry of the same name in the same scope overrides them.
+        for entry in discover_local_skills(dir) {
+            skills.insert(
+                entry.name.clone(),
+                ResolvedSkillEntry {
+                    entry,
+                    declared_in: dir.to_path_buf(),
+                },
+            );
+        }
         for skill in &file.skills {
             skills.insert(
                 skill.name.clone(),
@@ -176,6 +188,43 @@ fn build_scope(
         defaults,
         provenance,
     })
+}
+
+/// Find skills auto-declared by the `.blick/skills/<name>/` convention next
+/// to a `blick.toml`. Each child directory containing `SKILL.md` (or
+/// `README.md`) is exposed as a skill named after the directory, with a
+/// synthetic local `source`.
+fn discover_local_skills(dir: &Path) -> Vec<SkillEntry> {
+    let root = dir.join(LOCAL_SKILLS_DIR);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let has_body = ["SKILL.md", "skill.md", "README.md", "readme.md"]
+            .iter()
+            .any(|name| path.join(name).exists());
+        if !has_body {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        found.push(SkillEntry {
+            name: name.to_owned(),
+            source: format!("./{LOCAL_SKILLS_DIR}/{name}"),
+            r#ref: None,
+            subpath: None,
+        });
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
 }
 
 /// Map each path (relative to repo_root) to its owning scope. The owning
@@ -278,6 +327,53 @@ skills = ["owasp", "react"]
         assert!(web.skills.contains_key("react"));
         assert_eq!(web.reviews.len(), 1);
         assert_eq!(web.reviews[0].name, "web-review");
+    }
+
+    #[test]
+    fn auto_discovers_local_blick_skills_directory() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "blick.toml",
+            r#"
+[[reviews]]
+name = "default"
+skills = ["foo"]
+"#,
+        );
+        write(tmp.path(), ".blick/skills/foo/SKILL.md", "# foo\n");
+        // Bare directory without SKILL.md/README.md should be ignored.
+        std::fs::create_dir_all(tmp.path().join(".blick/skills/empty")).unwrap();
+
+        let scopes = load_scopes(tmp.path()).unwrap();
+        assert_eq!(scopes.len(), 1);
+        let foo = scopes[0]
+            .skills
+            .get("foo")
+            .expect(".blick/skills/foo should be auto-discovered");
+        assert_eq!(foo.entry.source, "./.blick/skills/foo");
+        assert!(!scopes[0].skills.contains_key("empty"));
+    }
+
+    #[test]
+    fn explicit_skill_overrides_auto_discovered_one() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "blick.toml",
+            r#"
+[[skills]]
+name = "foo"
+source = "./custom/foo"
+
+[[reviews]]
+name = "default"
+"#,
+        );
+        write(tmp.path(), ".blick/skills/foo/SKILL.md", "# auto\n");
+
+        let scopes = load_scopes(tmp.path()).unwrap();
+        assert_eq!(scopes[0].skills["foo"].entry.source, "./custom/foo");
     }
 
     #[test]
