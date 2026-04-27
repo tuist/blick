@@ -64,6 +64,15 @@ impl AgentRunner for OpencodeRunner {
                 )));
             }
 
+            if stdout.trim().is_empty() {
+                let detail = if stderr.trim().is_empty() {
+                    "no stdout and no stderr — is the model authenticated?".to_owned()
+                } else {
+                    format!("no stdout. stderr: {}", stderr.trim())
+                };
+                return Err(BlickError::Api(format!("opencode produced empty output: {detail}")));
+            }
+
             Ok(RunOutput {
                 text: stdout.clone(),
                 stdout,

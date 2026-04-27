@@ -35,7 +35,13 @@ jobs:
       - name: Run blick review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
         run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "ANTHROPIC_API_KEY is not set — add it to repo secrets so opencode can authenticate." >&2
+            exit 1
+          fi
           # The base ref is whatever the PR targets (typically `main`).
           base="origin/${{ github.event.pull_request.base.ref }}"
           ./target/release/blick review --base "$base" --json --stream | tee blick-review.json
