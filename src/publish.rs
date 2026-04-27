@@ -47,9 +47,14 @@ pub fn publish(repo_root: &Path, args: PublishArgs) -> Result<(), BlickError> {
     );
 
     if let Some(pr) = ctx.pr {
-        let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
-        gh_api_post(&format!("repos/{}/pulls/{pr}/reviews", ctx.repo), &review)?;
-        eprintln!("✓ posted PR review on #{pr}");
+        let total = render::total_findings(&run_dir)?;
+        if total == 0 {
+            eprintln!("ℹ no findings; skipping PR review post (check runs convey the pass status)");
+        } else {
+            let review = render::render(&run_dir, Format::GithubReview, render_ctx)?;
+            gh_api_post(&format!("repos/{}/pulls/{pr}/reviews", ctx.repo), &review)?;
+            eprintln!("✓ posted PR review on #{pr}");
+        }
     } else {
         eprintln!("ℹ no PR context detected; skipped PR review post");
     }

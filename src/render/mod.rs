@@ -48,6 +48,12 @@ pub fn render(
     }
 }
 
+/// Sum of findings across every persisted task in a run.
+pub fn total_findings(run_dir: &Path) -> Result<usize, BlickError> {
+    let records = list_task_records(run_dir)?;
+    Ok(records.iter().map(|r| r.report.findings.len()).sum())
+}
+
 fn render_github_review(
     records: &[TaskRecord],
     ctx: RenderContext<'_>,
@@ -65,18 +71,22 @@ fn render_github_review(
         total_findings += record.report.findings.len();
         let index = DiffLineIndex::from_unified(&record.diff);
 
-        summary_lines.push(format!(
-            "**{}/{}** — {} ({} finding{})",
-            record.scope_label,
-            record.review_name,
-            record.report.summary,
-            record.report.findings.len(),
-            if record.report.findings.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ));
+        // Only mention reviews that actually contributed findings; otherwise
+        // the body just repeats the "No findings" header.
+        if !record.report.findings.is_empty() {
+            summary_lines.push(format!(
+                "**{}/{}** - {} ({} finding{})",
+                record.scope_label,
+                record.review_name,
+                record.report.summary,
+                record.report.findings.len(),
+                if record.report.findings.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
 
         for finding in &record.report.findings {
             let body = format!(
