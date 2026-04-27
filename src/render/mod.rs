@@ -116,7 +116,7 @@ fn render_github_review(
             let body = format!(
                 "{} **{} · {}**\n\n{}\n\n— {} · `{}` review",
                 severity_emoji(finding.severity),
-                finding.severity.as_str(),
+                finding.severity.label(),
                 finding.title,
                 finding.body,
                 BLICK_FOOTER_LINK,
@@ -192,7 +192,7 @@ fn build_review_body(
             body.push_str(&format!(
                 "- {} **{}** {} - {}\n",
                 severity_emoji(finding.severity),
-                finding.severity.as_str(),
+                finding.severity.label(),
                 location,
                 finding.title
             ));
@@ -294,7 +294,7 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
                 lines.push(format!(
                     "| {} {} | {} | {} |",
                     severity_emoji(finding.severity),
-                    finding.severity.as_str(),
+                    finding.severity.label(),
                     location,
                     finding.title
                 ));

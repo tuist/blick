@@ -156,11 +156,22 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// Lowercase tag matching the JSON serialization (`low` / `medium` /
+    /// `high`). Use [`Severity::label`] for user-facing rendering.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+        }
+    }
+
+    /// Capitalized label suitable for human-facing output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
         }
     }
 }

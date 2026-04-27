@@ -220,7 +220,7 @@ pub fn render_report(report: &ReviewReport, as_json: bool) -> Result<String, Bli
         lines.push(format!(
             "{}. [{}] {} - {}",
             index + 1,
-            finding.severity.as_str(),
+            finding.severity.label(),
             location,
             finding.title
         ));
@@ -298,6 +298,6 @@ mod tests {
             }],
         };
         let rendered = render_report(&report, false).expect("human output should render");
-        assert!(rendered.contains("[medium] src/main.rs:8"));
+        assert!(rendered.contains("[Medium] src/main.rs:8"));
     }
 }
