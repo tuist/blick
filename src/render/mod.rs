@@ -106,25 +106,29 @@ fn severity_badge(severity: Severity) -> String {
 /// substring rather than full HTML-escaping so code samples with `<T>` or
 /// `&` in finding bodies still render normally.
 fn neutralize_details_close(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
     let needle = b"</details";
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
     let mut i = 0;
-    while i < bytes.len() {
-        if i + needle.len() <= bytes.len()
-            && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle)
-        {
-            // Preserve original casing; just inject a backslash after `<`
-            // so the browser no longer sees a closing tag.
+    // The needle is pure ASCII, so any byte that matches its first byte
+    // (`<`, 0x3C) is guaranteed to sit on a UTF-8 char boundary — we can
+    // safely slice `text[..]` at match positions and copy unmatched runs
+    // as string slices, which preserves multi-byte content (emoji, CJK,
+    // accents) exactly.
+    while i + needle.len() <= bytes.len() {
+        if bytes[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            out.push_str(&text[last..i]);
             out.push('<');
             out.push('\\');
             out.push_str(&text[i + 1..i + needle.len()]);
             i += needle.len();
+            last = i;
         } else {
-            out.push(bytes[i] as char);
             i += 1;
         }
     }
+    out.push_str(&text[last..]);
     out
 }
 
@@ -499,6 +503,14 @@ mod tests {
             neutralize_details_close("use Vec<T> & avoid Box"),
             "use Vec<T> & avoid Box"
         );
+        // Multi-byte UTF-8 (emoji, CJK, accents) must be preserved verbatim
+        // alongside any neutralized close tag — earlier byte-by-byte
+        // implementation corrupted these.
+        assert_eq!(
+            neutralize_details_close("héllo 日本語 🦀 </details> tail"),
+            "héllo 日本語 🦀 <\\/details> tail"
+        );
+        assert_eq!(neutralize_details_close("日本語"), "日本語");
     }
 
     #[test]
