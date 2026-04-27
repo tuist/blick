@@ -1,0 +1,14 @@
+[agent]
+kind = "opencode"
+model = "anthropic/claude-sonnet-4-5"
+
+[defaults]
+base = "origin/main"
+max_concurrency = 2
+
+[[reviews]]
+name = "default"
+prompt = """
+Focus on Rust correctness, async/await soundness, error handling, and
+public-API surface changes. Skip style nits — clippy and rustfmt cover those.
+"""

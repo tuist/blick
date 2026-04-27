@@ -1,0 +1,83 @@
+name: Blick Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  MISE_VERSION: "2026.4.18"
+  MISE_GITHUB_ATTESTATIONS: 0
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history to diff against the PR base.
+          fetch-depth: 0
+      - uses: jdx/mise-action@v4.0.1
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+      - name: Build blick from source
+        run: cargo build --release --locked
+      - name: Verify tooling
+        run: |
+          ./target/release/blick --version
+          opencode --version || true
+      - name: Run blick review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # The base ref is whatever the PR targets (typically `main`).
+          base="origin/${{ github.event.pull_request.base.ref }}"
+          ./target/release/blick review --base "$base" --json --stream | tee blick-review.json
+      - name: Upload run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blick-runs
+          path: .blick/runs/
+          if-no-files-found: ignore
+      - name: Post review comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          REVIEW_FILE: blick-review.json
+        with:
+          script: |
+            const fs = require('fs');
+            const path = process.env.REVIEW_FILE;
+            if (!fs.existsSync(path)) {
+              core.warning(`No review output at ${path}; skipping comment`);
+              return;
+            }
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync(path, 'utf8'));
+            } catch (e) {
+              core.warning(`Could not parse ${path}: ${e.message}`);
+              return;
+            }
+            const findings = report.findings || [];
+            const lines = [`### Blick review`, ``, `${report.summary || 'No summary.'}`];
+            if (findings.length > 0) {
+              lines.push('', '| Severity | File | Title |', '| --- | --- | --- |');
+              for (const f of findings) {
+                const loc = f.line ? `${f.file}:${f.line}` : f.file;
+                lines.push(`| ${f.severity} | \`${loc}\` | ${f.title} |`);
+              }
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: lines.join('\n'),
+            });
