@@ -101,23 +101,32 @@ fn severity_badge(severity: Severity) -> String {
 }
 
 /// Collapsible block embedded in every inline finding comment so an AI agent
-/// asked to "address this comment" has self-contained instructions for what
-/// to do — without the human reviewer needing to see the noise by default.
-fn agent_instructions(file: &str, line: Option<u64>) -> String {
-    let location = match line {
-        Some(line) => format!("`{file}:{line}`"),
-        None => format!("`{file}`"),
+/// asked to "address this comment" has a self-contained prompt — the
+/// finding's title, body, and location are duplicated *inside* the block so
+/// an agent that grabs only the `<details>` content still has everything it
+/// needs. Hidden behind a summary by default so the human reviewer doesn't
+/// see the duplication unless they expand it.
+fn agent_instructions(finding: &Finding) -> String {
+    let location = match finding.line {
+        Some(line) => format!("`{}:{line}`", finding.file),
+        None => format!("`{}`", finding.file),
     };
     format!(
         "<details>\n\
          <summary>🤖 Instructions for AI agents</summary>\n\n\
-         If you are an AI agent asked to address this finding:\n\n\
-         1. Read the title and details above carefully.\n\
-         2. Open {location} and understand the surrounding code before changing anything.\n\
-         3. Fix the underlying issue — do not silence the symptom (e.g. by suppressing a warning or deleting the test that surfaces it).\n\
-         4. Run the project's existing test and lint commands and confirm they pass before reporting the task as complete.\n\
-         5. Keep the change minimal and focused on this finding; surface unrelated concerns separately.\n\n\
-         </details>"
+         You are an AI agent asked to address a code review finding. Treat this block as your prompt.\n\n\
+         **Finding:** {title}\n\n\
+         **Details:**\n\n\
+         {body}\n\n\
+         **Location:** {location}\n\n\
+         **How to fix:**\n\n\
+         1. Open {location} and read the surrounding code so you understand the context before changing anything.\n\
+         2. Fix the underlying issue described in *Details* above — do not silence the symptom (e.g. by suppressing a warning, catching and discarding an error, or deleting the test that surfaces it).\n\
+         3. Run the project's existing test and lint commands and confirm they pass before reporting the task as complete.\n\
+         4. Keep the change minimal and focused on this finding; surface any unrelated concerns separately rather than bundling them in.\n\n\
+         </details>",
+        title = finding.title,
+        body = finding.body,
     )
 }
 
@@ -162,7 +171,7 @@ fn render_github_review(
                 severity_badge(finding.severity),
                 finding.title,
                 finding.body,
-                agent_instructions(&finding.file, finding.line),
+                agent_instructions(finding),
                 BLICK_FOOTER_LINK,
                 origin,
             );
