@@ -74,46 +74,97 @@ cleanup_review_fixture() {
 
 write_codex_config() {
   cat > "${REPO}/blick.toml" <<'EOF'
-[llm]
-provider = "codex"
+[agent]
+kind = "codex"
+model = "openai/gpt-5"
 
-[review]
+[defaults]
 base = "HEAD"
+
+[[reviews]]
+name = "default"
 EOF
 }
 
 write_workflow_config() {
-  cat > "${REPO}/blick.toml" <<'EOF'
-[llm]
-provider = "codex"
+  mkdir -p "${REPO}/skills/correctness"
+  cat > "${REPO}/skills/correctness/SKILL.md" <<'EOF'
+# correctness
 
-[review]
-base = "HEAD"
-
-[[review.workflow.steps]]
-type = "prompt"
-role = "system"
-content = """
 Only report correctness issues.
 Return JSON only.
-"""
-
-[[review.workflow.steps]]
-type = "prompt"
-role = "user"
-content = """
-Review base: {{base}}
-
-Files:
-{{files}}
-
-Patch:
-{{diff}}
-"""
-
-[[review.workflow.steps]]
-type = "llm_review"
 EOF
+
+  cat > "${REPO}/blick.toml" <<'EOF'
+[agent]
+kind = "codex"
+model = "openai/gpt-5"
+
+[defaults]
+base = "HEAD"
+
+[[skills]]
+name = "correctness"
+source = "./skills/correctness"
+
+[[reviews]]
+name = "default"
+skills = ["correctness"]
+prompt = """
+Review base: HEAD
+"""
+EOF
+}
+
+write_multi_review_config() {
+  cat > "${REPO}/blick.toml" <<'EOF'
+[agent]
+kind = "codex"
+model = "openai/gpt-5"
+
+[defaults]
+base = "HEAD"
+
+[[reviews]]
+name = "security"
+
+[[reviews]]
+name = "technical"
+EOF
+}
+
+write_multi_scope_config() {
+  mkdir -p "${REPO}/apps/web/src" "${REPO}/apps/ios/src"
+  cat > "${REPO}/blick.toml" <<'EOF'
+[agent]
+kind = "codex"
+model = "openai/gpt-5"
+
+[defaults]
+base = "HEAD"
+
+[[reviews]]
+name = "root-review"
+EOF
+  cat > "${REPO}/apps/web/blick.toml" <<'EOF'
+[[reviews]]
+name = "web-review"
+EOF
+  cat > "${REPO}/apps/ios/blick.toml" <<'EOF'
+[[reviews]]
+name = "ios-review"
+EOF
+
+  (
+    cd "${REPO}" || exit 1
+    git add blick.toml apps/web/blick.toml apps/ios/blick.toml
+    echo 'fn web() {}' > apps/web/src/lib.rs
+    echo 'fn ios() {}' > apps/ios/src/lib.rs
+    git add apps/web/src/lib.rs apps/ios/src/lib.rs
+    git commit -m "add scopes" >/dev/null
+    echo 'fn web_changed() {}' > apps/web/src/lib.rs
+    echo 'fn ios_changed() {}' > apps/ios/src/lib.rs
+  )
 }
 
 run_review_and_dump() {
@@ -122,7 +173,7 @@ run_review_and_dump() {
     PATH="${FAKE_BIN}:/usr/bin:/bin" \
       PROMPT_LOG="${PROMPT_LOG}" \
       SYSTEM_LOG="${SYSTEM_LOG}" \
-      "${BLICK_BIN}" review --config blick.toml --json > "${WORKDIR}/review.out"
+      "${BLICK_BIN}" review --json > "${WORKDIR}/review.out" 2>/dev/null
   ) || return $?
 
   printf '=== review ===\n'
@@ -133,4 +184,47 @@ run_review_and_dump() {
     printf '\n=== system ===\n'
     cat "${SYSTEM_LOG}"
   fi
+}
+
+run_review_named() {
+  name="${1:-}"
+  (
+    cd "${REPO}" || exit 1
+    if [ -n "${name}" ]; then
+      PATH="${FAKE_BIN}:/usr/bin:/bin" \
+        PROMPT_LOG="${PROMPT_LOG}" \
+        SYSTEM_LOG="${SYSTEM_LOG}" \
+        "${BLICK_BIN}" review "${name}" --json > "${WORKDIR}/review.out" 2>/dev/null
+    else
+      PATH="${FAKE_BIN}:/usr/bin:/bin" \
+        PROMPT_LOG="${PROMPT_LOG}" \
+        SYSTEM_LOG="${SYSTEM_LOG}" \
+        "${BLICK_BIN}" review --json > "${WORKDIR}/review.out" 2>/dev/null
+    fi
+  ) || return $?
+  cat "${WORKDIR}/review.out"
+}
+
+run_review_with_env() {
+  env_pairs="$1"
+  (
+    cd "${REPO}" || exit 1
+    # shellcheck disable=SC2086
+    env ${env_pairs} \
+      PATH="${FAKE_BIN}:/usr/bin:/bin" \
+      PROMPT_LOG="${PROMPT_LOG}" \
+      SYSTEM_LOG="${SYSTEM_LOG}" \
+      "${BLICK_BIN}" review --json 2>/dev/null
+  )
+}
+
+run_config_explain() {
+  (
+    cd "${REPO}" || exit 1
+    "${BLICK_BIN}" config --explain
+  )
+}
+
+list_run_logs() {
+  find "${REPO}/.blick/runs" -type f 2>/dev/null
 }

@@ -3,3 +3,4 @@
 /.shellspec-local
 /.shellspec-quick.log
 /bazel-*
+.blick/
