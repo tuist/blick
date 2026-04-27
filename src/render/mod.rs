@@ -87,12 +87,38 @@ fn origin_label(scope_label: &str, review_name: &str) -> String {
     }
 }
 
-fn severity_emoji(severity: Severity) -> &'static str {
-    match severity {
-        Severity::High => "🔴",
-        Severity::Medium => "🟠",
-        Severity::Low => "🔵",
-    }
+/// Codex-style shields.io priority badge. `<sub><sub>` shrinks the badge so
+/// it sits inline with text without dominating the line.
+fn severity_badge(severity: Severity) -> String {
+    let (priority, color) = match severity {
+        Severity::High => ("P1", "red"),
+        Severity::Medium => ("P2", "yellow"),
+        Severity::Low => ("P3", "green"),
+    };
+    format!(
+        "<sub><sub>![{priority} Badge](https://img.shields.io/badge/{priority}-{color}?style=flat)</sub></sub>"
+    )
+}
+
+/// Collapsible block embedded in every inline finding comment so an AI agent
+/// asked to "address this comment" has self-contained instructions for what
+/// to do — without the human reviewer needing to see the noise by default.
+fn agent_instructions(file: &str, line: Option<u64>) -> String {
+    let location = match line {
+        Some(line) => format!("`{file}:{line}`"),
+        None => format!("`{file}`"),
+    };
+    format!(
+        "<details>\n\
+         <summary>🤖 Instructions for AI agents</summary>\n\n\
+         If you are an AI agent asked to address this finding:\n\n\
+         1. Read the title and details above carefully.\n\
+         2. Open {location} and understand the surrounding code before changing anything.\n\
+         3. Fix the underlying issue — do not silence the symptom (e.g. by suppressing a warning or deleting the test that surfaces it).\n\
+         4. Run the project's existing test and lint commands and confirm they pass before reporting the task as complete.\n\
+         5. Keep the change minimal and focused on this finding; surface unrelated concerns separately.\n\n\
+         </details>"
+    )
 }
 
 const BLICK_FOOTER_LINK: &str = "[Blick](https://github.com/tuist/blick)";
@@ -132,11 +158,11 @@ fn render_github_review(
 
         for finding in &record.report.findings {
             let body = format!(
-                "{} **{} · {}**\n\n{}\n\n— {} · `{}` review",
-                severity_emoji(finding.severity),
-                finding.severity.label(),
+                "{} **{}**\n\n{}\n\n{}\n\n— {} · `{}` review",
+                severity_badge(finding.severity),
                 finding.title,
                 finding.body,
+                agent_instructions(&finding.file, finding.line),
                 BLICK_FOOTER_LINK,
                 origin,
             );
@@ -212,9 +238,8 @@ fn build_review_body(
                 None => format!("`{}`", finding.file),
             };
             body.push_str(&format!(
-                "- {} **{}** {} - {}\n",
-                severity_emoji(finding.severity),
-                finding.severity.label(),
+                "- {} {} - {}\n",
+                severity_badge(finding.severity),
                 location,
                 finding.title
             ));
@@ -306,7 +331,7 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
         lines.push(record.report.summary.clone());
         if !record.report.findings.is_empty() {
             lines.push(String::new());
-            lines.push("| Severity | File | Title |".to_owned());
+            lines.push("| Priority | File | Title |".to_owned());
             lines.push("| --- | --- | --- |".to_owned());
             for finding in &record.report.findings {
                 let location = match finding.line {
@@ -314,9 +339,8 @@ fn render_github_summary(records: &[TaskRecord]) -> String {
                     None => format!("`{}`", finding.file),
                 };
                 lines.push(format!(
-                    "| {} {} | {} | {} |",
-                    severity_emoji(finding.severity),
-                    finding.severity.label(),
+                    "| {} | {} | {} |",
+                    severity_badge(finding.severity),
                     location,
                     finding.title
                 ));
@@ -408,9 +432,12 @@ mod tests {
         assert!(json.contains("\"commit_id\": \"deadbeef\""));
         assert!(json.contains("\"path\": \"src/main.rs\""));
         assert!(json.contains("\"line\": 2"));
-        // Inline comment uses the medium emoji and links to Blick.
-        assert!(json.contains("🟠"));
+        // Inline comment uses the P2 (medium) priority badge and links to Blick.
+        assert!(json.contains("P2-yellow"));
         assert!(json.contains("[Blick]"));
+        // Inline comments embed agent instructions in a collapsed <details>.
+        assert!(json.contains("Instructions for AI agents"));
+        assert!(json.contains("src/main.rs:2"));
         // Out-of-diff finding ends up in the review body.
         assert!(json.contains("Findings outside this PR"));
         assert!(json.contains("docs/old.md"));
