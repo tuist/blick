@@ -292,32 +292,28 @@ Findings whose `(file, line)` is **outside** the PR's diff hunks (the agent comm
 
 ## GitHub Actions integration
 
-The recommended workflow runs blick on every PR, posts per-review check runs, and submits one resolvable review thread per run. See [`.github/workflows/blick-review.yml`](.github/workflows/blick-review.yml) in this repo for the canonical example.
-
-The shape:
+`blick publish` reads the latest run from `.blick/runs/latest`, auto-detects the PR context from the GitHub Actions environment, and posts a Check Run per `(scope, review)` plus one resolvable PR review. See [`.github/workflows/blick-review.yml`](.github/workflows/blick-review.yml) for the canonical example. The full workflow is two steps:
 
 ```yaml
-- run: ./target/release/blick review --base "origin/${{ github.event.pull_request.base.ref }}" --json --stream
+- name: Run blick review
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  run: blick review --base "origin/${{ github.event.pull_request.base.ref }}"
 
-- name: Post per-review check runs
-  env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}, HEAD_SHA: ${{ github.event.pull_request.head.sha }} }
-  run: |
-    blick render --format=check-run --head-sha="$HEAD_SHA" |
-      while IFS= read -r line; do
-        printf '%s' "$line" |
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -X POST --input -
-      done
-
-- name: Post resolvable PR review
-  env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}, HEAD_SHA: ${{ github.event.pull_request.head.sha }}, PR_NUMBER: ${{ github.event.pull_request.number }} }
-  run: |
-    blick render --format=github-review --head-sha="$HEAD_SHA" > review.json
-    gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" -X POST --input review.json
+- name: Publish to the PR
+  if: always()
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  run: blick publish
 ```
 
 Required permissions on the workflow: `checks: write`, `pull-requests: write`.
 
-The PR author can mark each individual line comment as resolved as they fix it - that's standard GitHub PR review behavior, and works because we're posting through the reviews API rather than as plain issue comments or check annotations.
+`blick publish` shells out to `gh api`, so the runner needs `gh` on PATH (it's pre-installed on GitHub-hosted runners). For non-Actions environments, pass `--head-sha`, `--gh-repo`, and `--pr` explicitly.
+
+The PR author can mark each individual line comment as resolved as they fix it. That's standard GitHub PR review behavior, and works because we post through the reviews API rather than as plain issue comments or check annotations. Findings whose lines fall outside the PR's diff are surfaced in the review body so the API call doesn't 422.
+
+It's also worth scoping the workflow to PRs from branches inside the repository (`if: github.event.pull_request.head.repo.full_name == github.repository`). Forked PRs don't have access to repo secrets and shouldn't be reviewed by an LLM agent that can read the codebase before the change is trusted.
 
 ### Branding the check-run icon
 

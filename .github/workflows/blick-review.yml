@@ -15,6 +15,10 @@ env:
 jobs:
   review:
     name: Review
+    # Only run on PRs from branches in this repo. Forked PRs don't have
+    # access to repo secrets and shouldn't be exposed to an LLM agent that
+    # can read the codebase.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -36,11 +40,18 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "ANTHROPIC_API_KEY is not set — add it to repo secrets so opencode can authenticate." >&2
+            echo "ANTHROPIC_API_KEY is not set; add it to repo secrets so opencode can authenticate." >&2
             exit 1
           fi
-          base="origin/${{ github.event.pull_request.base.ref }}"
-          ./target/release/blick review --base "$base" --json --stream
+          ./target/release/blick review \
+            --base "origin/${{ github.event.pull_request.base.ref }}" \
+            --json --stream
+
+      - name: Publish review
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./target/release/blick publish
 
       - name: Upload run logs
         if: always()
@@ -49,41 +60,3 @@ jobs:
           name: blick-runs
           path: .blick/runs/
           if-no-files-found: ignore
-
-      - name: Post per-review check runs
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -e .blick/runs/latest ]; then
-            echo "No run output to post; skipping." >&2
-            exit 0
-          fi
-          ./target/release/blick render --format=check-run --head-sha="$HEAD_SHA" |
-            while IFS= read -r line; do
-              [ -z "$line" ] && continue
-              printf '%s' "$line" |
-                gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
-                  -X POST -H "Accept: application/vnd.github+json" --input -
-            done
-
-      - name: Post resolvable PR review
-        if: always() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -e .blick/runs/latest ]; then
-            echo "No run output to post; skipping." >&2
-            exit 0
-          fi
-          ./target/release/blick render --format=github-review --head-sha="$HEAD_SHA" \
-            > review.json
-          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
-            -X POST -H "Accept: application/vnd.github+json" --input review.json

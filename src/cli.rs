@@ -32,6 +32,9 @@ pub enum Commands {
     /// Render a previous run for a downstream destination (PR review, check
     /// runs, markdown summary).
     Render(RenderArgs),
+    /// Publish the latest run to GitHub: posts per-review check runs and a
+    /// resolvable PR review. Auto-detects PR context from GitHub Actions.
+    Publish(PublishArgs),
 }
 
 #[derive(Debug, Args)]
@@ -114,6 +117,31 @@ pub struct RenderArgs {
     pub head_sha: Option<String>,
 
     /// Repository root (defaults to current directory).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PublishArgs {
+    /// Run id, `latest`, or a directory path. Defaults to `latest`.
+    #[arg(long)]
+    pub run: Option<String>,
+
+    /// Commit SHA the report applies to. Auto-detected from
+    /// `GITHUB_EVENT_PATH` when running in GitHub Actions.
+    #[arg(long)]
+    pub head_sha: Option<String>,
+
+    /// `owner/repo` slug. Auto-detected from `GITHUB_REPOSITORY`.
+    #[arg(long, value_name = "OWNER/REPO")]
+    pub gh_repo: Option<String>,
+
+    /// PR number. Auto-detected from `GITHUB_EVENT_PATH`. When omitted and
+    /// no PR context is detected, only check runs are posted.
+    #[arg(long)]
+    pub pr: Option<u64>,
+
+    /// Repository root on disk (defaults to current directory).
     #[arg(long)]
     pub repo: Option<PathBuf>,
 }

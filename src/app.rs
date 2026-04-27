@@ -9,10 +9,13 @@ use clap::Parser;
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::agent::{AgentRunner, runner_for};
-use crate::cli::{Cli, Commands, ConfigArgs, InitArgs, RenderArgs, ReviewArgs};
+use crate::cli::{
+    Cli, Commands, ConfigArgs, InitArgs, PublishArgs as CliPublishArgs, RenderArgs, ReviewArgs,
+};
 use crate::config::{AgentConfig, AgentKind, ConfigFile, ScopeConfig};
 use crate::error::BlickError;
 use crate::git::{DiffBundle, collect_diff_in};
+use crate::publish::{self, PublishArgs};
 use crate::render::{self, RenderContext};
 use crate::review::{Finding, ReviewOutcome, ReviewReport, render_report, run_review};
 use crate::run_record::resolve_run_dir;
@@ -29,7 +32,25 @@ pub async fn run() -> Result<(), BlickError> {
         Commands::Review(args) => review(args).await,
         Commands::Config(args) => show_config(args),
         Commands::Render(args) => render_run(args),
+        Commands::Publish(args) => publish_run(args),
     }
+}
+
+fn publish_run(args: CliPublishArgs) -> Result<(), BlickError> {
+    let repo_root = args
+        .repo
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()?;
+    publish::publish(
+        &repo_root,
+        PublishArgs {
+            run: args.run,
+            head_sha: args.head_sha,
+            repo: args.gh_repo,
+            pr: args.pr,
+        },
+    )
 }
 
 fn render_run(args: RenderArgs) -> Result<(), BlickError> {
