@@ -39,6 +39,10 @@ pub struct Finding {
 pub struct ReviewOutcome {
     pub report: ReviewReport,
     pub run: RunOutput,
+    /// The assembled system prompt sent to the agent — persisted alongside
+    /// the log so contributors can confirm skill bodies and overrides made
+    /// it in.
+    pub system_prompt: String,
 }
 
 /// Runs a single review (named bundle of skills) for one scope.
@@ -56,7 +60,11 @@ pub async fn run_review(
 
     let run = runner.run(&system_prompt, &user_prompt).await?;
     let report = parse_report(&run.text)?;
-    Ok(ReviewOutcome { report, run })
+    Ok(ReviewOutcome {
+        report,
+        run,
+        system_prompt,
+    })
 }
 
 fn collect_skills(
