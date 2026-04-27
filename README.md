@@ -12,24 +12,24 @@ It's designed for monorepos: any subdirectory can declare its own `blick.toml` t
 
 ## Table of contents
 
-1. [Install](#install)
-2. [Quick start](#quick-start)
-3. [How it works](#how-it-works)
+1. [Install](#-install)
+2. [Quick start](#-quick-start)
+3. [How it works](#-how-it-works)
 4. [Configuration](#configuration)
-5. [Skills](#skills)
+5. [Skills](#-skills)
 6. [Reviews](#reviews)
 7. [Multi-scope monorepos](#multi-scope-monorepos)
-8. [Agents](#agents)
+8. [Agents](#-agents)
 9. [Running reviews](#running-reviews)
 10. [Rendering reports](#rendering-reports)
-11. [GitHub Actions integration](#github-actions-integration)
+11. [GitHub Actions integration](#-github-actions-integration)
 12. [Development](#development)
 13. [Releases](#releases)
-14. [Credits](#credits)
+14. [Credits](#-credits)
 
 ---
 
-## Install
+## 🚀 Install
 
 For local development in this repository:
 
@@ -45,7 +45,7 @@ mise use -g github:tuist/blick
 
 `blick` itself is just one binary. The agent CLI it drives (`claude`, `codex`, or `opencode`) needs to be on the `PATH`; install whichever one(s) you use the same way (most are available through `mise`, `npm`, or `brew`).
 
-## Quick start
+## ⚡ Quick start
 
 ```sh
 # 1. Drop a starter config in the repo root.
@@ -60,7 +60,7 @@ blick render --format=github-summary
 
 The `init` command writes a minimal `blick.toml`. Everything below is what you can layer on top.
 
-## How it works
+## 🔍 How it works
 
 Every `blick review` invocation:
 
@@ -103,7 +103,7 @@ prompt = "Focus on injection, auth, and data exposure."
 
 `blick config --explain` prints the effective configuration for every scope and which file each value came from.
 
-## Skills
+## 🧩 Skills
 
 A skill is a reusable analysis: a markdown body that describes what to look for, packaged in a directory with a `SKILL.md` (or `README.md`) file. Reviews reference skills by name to compose the agent's system prompt.
 
@@ -202,7 +202,7 @@ skills = ["react-best-practices"]
 
 A PR touching both directories runs the iOS technical review with claude on the iOS files and the web technical review with codex on the web files, **concurrently** (subject to `max_concurrency`), each with its own scoped diff and its own check run on the PR.
 
-## Agents
+## 🤖 Agents
 
 Three agent kinds are supported:
 
@@ -290,7 +290,7 @@ Findings whose `(file, line)` is **outside** the PR's diff hunks (the agent comm
 
 `--run` selects which run to render (defaults to `latest`). `--head-sha` is required for `github-review` and `check-run` (in CI, pass the PR head commit).
 
-## GitHub Actions integration
+## 🐙 GitHub Actions integration
 
 `blick publish` reads the latest run from `.blick/runs/latest`, auto-detects the PR context from the GitHub Actions environment, and posts a Check Run per `(scope, review)` plus one resolvable PR review. See [`.github/workflows/blick-review.yml`](.github/workflows/blick-review.yml) for the canonical example. The full workflow is two steps:
 
@@ -345,7 +345,7 @@ Releases are driven by conventional commits and `git-cliff`.
 - `mise run release:changelog` regenerates `CHANGELOG.md`
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) packages release archives and publishes GitHub releases that Mise can install through the `github:` backend
 
-## Credits
+## 🙌 Credits
 
 - [getsentry/warden](https://github.com/getsentry/warden) shaped the skills-driven review model and the per-PR comment UX
 - [models.dev](https://models.dev) gave the cross-provider model identifier syntax
