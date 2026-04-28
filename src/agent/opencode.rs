@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use async_trait::async_trait;
@@ -42,16 +43,32 @@ impl AgentRunner for OpencodeRunner {
             for arg in &extra {
                 command.arg(arg);
             }
-            // opencode `run` accepts the prompt as a positional argument.
-            // Avoid stdin: opencode does not consume it for `run`.
-            command.arg(prompt.as_str());
-            command.stdin(Stdio::null());
+            // Pipe the prompt via stdin instead of passing it as a positional
+            // argument. Large prompts (e.g. PR diffs in big repos) blow past
+            // the OS `ARG_MAX` limit and `execve` returns E2BIG before
+            // opencode can start. opencode `run` consumes stdin when no
+            // positional message is provided.
+            command.stdin(Stdio::piped());
             command.stdout(Stdio::piped());
             command.stderr(Stdio::piped());
 
-            let raw = command
-                .output()
+            let mut child = command
+                .spawn()
                 .map_err(|err| BlickError::Api(format!("failed to run {binary}: {err}")))?;
+
+            {
+                let mut stdin = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| BlickError::Api(format!("failed to open stdin for {binary}")))?;
+                stdin.write_all(prompt.as_bytes()).map_err(|err| {
+                    BlickError::Api(format!("failed to write prompt to {binary} stdin: {err}"))
+                })?;
+            }
+
+            let raw = child
+                .wait_with_output()
+                .map_err(|err| BlickError::Api(format!("failed to wait for {binary}: {err}")))?;
 
             let stdout = String::from_utf8_lossy(&raw.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&raw.stderr).into_owned();
