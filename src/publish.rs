@@ -25,6 +25,34 @@ pub struct PublishContext {
 
 pub fn publish(repo_root: &Path, args: PublishArgs) -> Result<(), BlickError> {
     let ctx = resolve_context(args.head_sha.as_deref(), args.repo.as_deref(), args.pr)?;
+
+    // If `blick review` failed before writing a run, there's nothing to
+    // render — but in CI (`if: always()` publish step) we still want the PR
+    // author to see *something* explaining the failure rather than a red
+    // workflow box and silence on the PR. Post a one-line notice and exit
+    // cleanly so the publish step doesn't double-fail the workflow.
+    let runs_root = repo_root.join(".blick").join("runs");
+    let probe = match args.run.as_deref() {
+        None | Some("latest") => runs_root.join("latest"),
+        Some(other) => runs_root.join(other),
+    };
+    if !probe.exists() {
+        eprintln!(
+            "ℹ no run directory at {} — `blick review` likely failed before writing a manifest",
+            probe.display()
+        );
+        if let Some(pr) = ctx.pr {
+            let body = build_review_failed_notice(&ctx);
+            let payload = serde_json::json!({ "body": body }).to_string();
+            let endpoint = format!("repos/{}/issues/{pr}/comments", ctx.repo);
+            match gh_api_post(&endpoint, &payload) {
+                Ok(()) => eprintln!("✓ posted review-failed notice on #{pr}"),
+                Err(err) => eprintln!("⚠ failed to post review-failed notice: {err}"),
+            }
+        }
+        return Ok(());
+    }
+
     let run_dir = crate::run_record::resolve_run_dir(repo_root, args.run.as_deref())?;
 
     let render_ctx = RenderContext {
@@ -134,6 +162,31 @@ fn resolve_context(
     });
 
     Ok(PublishContext { repo, head_sha, pr })
+}
+
+fn build_review_failed_notice(ctx: &PublishContext) -> String {
+    let workflow_link = workflow_run_url();
+    let mut body = String::from(
+        "### Blick review didn't run\n\n\
+         The `blick review` step failed before producing a manifest, so there's no \
+         review to post on this PR. This usually means the agent (opencode) couldn't \
+         start — common causes are an expired or suspended model API key, a missing \
+         secret, or the workflow timing out.\n",
+    );
+    if let Some(url) = workflow_link {
+        body.push_str(&format!("\nSee the workflow run for details: {url}\n",));
+    } else {
+        body.push_str("\nCheck the workflow logs for the underlying error.\n");
+    }
+    body.push_str(&format!("\n_Commit: `{}`_\n", ctx.head_sha));
+    body
+}
+
+fn workflow_run_url() -> Option<String> {
+    let server = env::var("GITHUB_SERVER_URL").ok()?;
+    let repo = env::var("GITHUB_REPOSITORY").ok()?;
+    let run_id = env::var("GITHUB_RUN_ID").ok()?;
+    Some(format!("{server}/{repo}/actions/runs/{run_id}"))
 }
 
 fn read_event_payload() -> Option<Value> {
