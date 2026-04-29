@@ -1,0 +1,46 @@
+name: Blick Learn
+
+on:
+  schedule:
+    # Daily at 07:00 UTC. Adjust to taste — the workflow is idempotent and
+    # updates the existing `blick/learn` PR in place when one already exists.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  MISE_VERSION: "2026.4.18"
+  MISE_GITHUB_ATTESTATIONS: 0
+
+jobs:
+  learn:
+    name: Learn
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v4.0.1
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+      - name: Build blick from source
+        run: cargo build --release --locked
+
+      - name: Run blick learn
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${FIREWORKS_API_KEY:-}" ]; then
+            echo "FIREWORKS_API_KEY is not set; add it to repo secrets so opencode can authenticate against Fireworks." >&2
+            exit 1
+          fi
+          ./target/release/blick learn

@@ -5,6 +5,7 @@ pub mod config;
 pub mod error;
 pub mod git;
 pub mod github;
+pub mod learn;
 pub mod publish;
 pub mod render;
 pub mod review;

@@ -23,8 +23,9 @@ It's designed for monorepos: any subdirectory can declare its own `blick.toml` t
 9. [Running reviews](#running-reviews)
 10. [Rendering reports](#rendering-reports)
 11. [GitHub Actions integration](#-github-actions-integration)
-12. [Releases](#releases)
-13. [Credits](#-credits)
+12. [Self-improvement: `blick learn`](#-self-improvement-blick-learn)
+13. [Releases](#releases)
+14. [Credits](#-credits)
 
 ---
 
@@ -324,6 +325,70 @@ Required permissions on the workflow: `checks: write`, `pull-requests: write`.
 The PR author can mark each individual line comment as resolved as they fix it. That's standard GitHub PR review behavior, and works because we post through the reviews API rather than as plain issue comments or check annotations. Findings whose lines fall outside the PR's diff are surfaced in the review body so the API call doesn't 422.
 
 It's also worth scoping the workflow to PRs from branches inside the repository (`if: github.event.pull_request.head.repo.full_name == github.repository`). Forked PRs don't have access to repo secrets and shouldn't be reviewed by an LLM agent that can read the codebase before the change is trusted.
+
+## 🪞 Self-improvement: `blick learn`
+
+`blick learn` is a periodic reflection pass that inspects how blick's past reviews landed with human reviewers and proposes edits to blick's own review setup — skills, prompts, agent instructions. It runs from a scheduled GitHub Actions workflow (default: daily) and maintains a single rolling **draft** PR on a fixed branch (`blick/learn`); subsequent runs force-push fresh proposals onto the same branch instead of opening a second PR.
+
+### What it learns from
+
+For every PR merged in the lookback window, learn pulls the PR's review threads via the GraphQL API and filters to threads authored by blick (recognized by the `[Blick](https://github.com/tuist/blick)` footer every line comment carries). Each thread is bucketed:
+
+- **resolved** (and not outdated) — a human marked the thread done; suggestion was accepted.
+- **unresolved** (on a merged PR) — suggestion was likely ignored or rejected.
+- **outdated** — GitHub flagged the thread as out of date; ambiguous, weighted low.
+
+The agent gets the bucketed threads plus the current contents of every file it's allowed to edit, and is asked to surface recurring patterns: noisy rules to relax, accepted-but-poorly-phrased rules to tighten, and missing skills to add.
+
+### What it can edit
+
+A small allowlist enforced before each commit:
+
+- `blick.toml` — review prompts, skill list, the `[learn]` block itself
+- `.blick/skills/**` — local skills, including new ones
+- `AGENTS.md` / `CLAUDE.md` — agent-facing instructions
+
+Anything outside this list causes learn to abort without committing. Source code, tests, CI, and dependencies are off limits.
+
+### Configuration
+
+```toml
+# blick.toml at the repo root
+[learn]
+lookback_days = 7              # how far back to read merged PRs
+min_signal = 3                 # don't open a PR unless N+ blick threads were observed
+reviewers = ["alice", "bob"]   # GitHub logins assigned on the PR
+team_reviewers = ["org/core"]  # GitHub team slugs (optional)
+labels = ["blick-learn"]
+base = "main"
+draft = true                   # default; learn refuses to auto-merge
+branch = "blick/learn"         # rolling branch used for the PR
+```
+
+`reviewers` is the knob that controls who gets pinged — they're only assigned the *first* time learn opens the PR, not on every cron tick.
+
+### CLI
+
+```sh
+# Print the proposal without committing or opening a PR
+blick learn --dry-run
+
+# Bypass the min_signal guard (useful for an initial backfill run)
+blick learn --force
+
+# Override the lookback window for a one-off run
+blick learn --lookback-days 30
+```
+
+### Branch safety
+
+If `blick/learn` already exists upstream and contains commits authored by anyone other than the learn bot identity, learn aborts rather than force-pushing — so a manual fix you pushed onto the branch doesn't get clobbered. Either land the manual change separately or delete the branch.
+
+### Workflow
+
+See [`.github/workflows/blick-learn.yml`](.github/workflows/blick-learn.yml) for the canonical example. Required permissions: `contents: write`, `pull-requests: write`. The same agent secret blick review uses (`FIREWORKS_API_KEY` / `ANTHROPIC_API_KEY` / etc.) is what learn drives.
+
+The feedback loop is self-reinforcing: a skill edit that makes future reviews worse will show up next week as more "ignored" threads, which the next learn run will try to fix. The `draft = true` + reviewer gate is what keeps it from going off the rails — don't be tempted to auto-merge.
 
 ## Releases
 

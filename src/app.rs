@@ -10,12 +10,14 @@ use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::agent::{AgentRunner, runner_for};
 use crate::cli::{
-    Cli, Commands, ConfigArgs, InitArgs, PublishArgs as CliPublishArgs, RenderArgs, ReviewArgs,
+    Cli, Commands, ConfigArgs, InitArgs, LearnArgs as CliLearnArgs, PublishArgs as CliPublishArgs,
+    RenderArgs, ReviewArgs,
 };
 use crate::config::{AgentConfig, AgentKind, ConfigFile, ScopeConfig};
 use crate::error::BlickError;
 use crate::git::{DiffBundle, collect_diff_in};
 use crate::github::fetch_last_reviewed_sha;
+use crate::learn::{self, LearnArgs};
 use crate::publish::{self, PublishArgs};
 use crate::render::{self, RenderContext};
 use crate::review::{Finding, ReviewOutcome, ReviewReport, render_report, run_review};
@@ -34,7 +36,19 @@ pub async fn run() -> Result<(), BlickError> {
         Commands::Config(args) => show_config(args),
         Commands::Render(args) => render_run(args),
         Commands::Publish(args) => publish_run(args),
+        Commands::Learn(args) => learn_run(args).await,
     }
+}
+
+async fn learn_run(args: CliLearnArgs) -> Result<(), BlickError> {
+    learn::learn(LearnArgs {
+        repo: args.repo,
+        dry_run: args.dry_run,
+        force: args.force,
+        lookback_days: args.lookback_days,
+        min_signal: args.min_signal,
+    })
+    .await
 }
 
 fn publish_run(args: CliPublishArgs) -> Result<(), BlickError> {
