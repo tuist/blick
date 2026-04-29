@@ -91,10 +91,18 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
 
     let mut tasks: Vec<TaskInput> = Vec::new();
     for (scope_root, scoped_diff) in owners {
+        // `group_changes_by_scope` only emits roots from `scopes`, so this
+        // lookup is guaranteed to hit. Surface a structured error rather
+        // than panicking, in case a future refactor breaks the invariant.
         let scope = scopes
             .iter()
             .find(|s| s.root == scope_root)
-            .expect("owner scope must exist")
+            .ok_or_else(|| {
+                BlickError::Config(format!(
+                    "internal error: owner scope {} not in loaded scopes",
+                    scope_root.display()
+                ))
+            })?
             .clone();
         let runner: Arc<dyn AgentRunner> = Arc::from(runner_for(&scope.agent)?);
         let reviews_to_run: Vec<_> = match args.name.as_deref() {
