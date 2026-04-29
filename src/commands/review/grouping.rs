@@ -53,15 +53,45 @@ fn slice_diff_by_files(diff: &str, files: &[String]) -> String {
     let mut current_keep = false;
     for line in diff.split_inclusive('\n') {
         if line.starts_with("diff --git ") {
-            current_keep = files
-                .iter()
-                .any(|f| line.contains(&format!("a/{f}")) || line.contains(&format!("b/{f}")));
+            current_keep = parse_diff_header_paths(line)
+                .map(|(a, b)| files.iter().any(|f| f == a || f == b))
+                .unwrap_or(false);
         }
         if current_keep {
             out.push_str(line);
         }
     }
     if out.is_empty() { diff.to_owned() } else { out }
+}
+
+/// Parse `diff --git a/<a> b/<b>` and return `(a, b)` with the `a/`/`b/`
+/// prefixes stripped. Returns `None` for malformed or quoted headers; the
+/// caller treats `None` as "don't include this block", and the trailing
+/// "fall back to the whole diff if nothing matched" branch handles the
+/// edge case where every header was unparseable.
+///
+/// Git quotes paths containing spaces, double quotes, or non-ASCII bytes
+/// (`diff --git "a/with spaces" "b/with spaces"`). Decoding that quoting
+/// correctly is non-trivial; rather than risk a wrong match, we return
+/// `None` and let the fallback path handle it.
+///
+/// This replaces an earlier `line.contains("a/{f}")` substring match that
+/// could match a longer file ending in the requested path's name (e.g.
+/// `a/src/lib` matched both `src/lib.rs` and `src/library.rs`).
+fn parse_diff_header_paths(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim_end_matches('\n').strip_prefix("diff --git ")?;
+    if rest.starts_with('"') {
+        return None;
+    }
+    // The format is `a/<path> b/<path>`. Split on the *last* ` b/` so a
+    // path containing ` b/` as a substring inside `a/...` doesn't cause
+    // a premature split.
+    let split = rest.rfind(" b/")?;
+    let a_part = rest.get(..split)?;
+    let b_part = rest.get(split + 1..)?;
+    let a = a_part.strip_prefix("a/")?;
+    let b = b_part.strip_prefix("b/")?;
+    Some((a, b))
 }
 
 #[cfg(test)]
@@ -103,5 +133,70 @@ diff --git a/server/lib.rs b/server/lib.rs\n\
         );
         assert!(chunk.contains("apps/web/main.rs"));
         assert!(chunk.contains("server/lib.rs"));
+    }
+
+    #[test]
+    fn slice_does_not_match_files_with_a_shared_prefix() {
+        // Regression: an earlier `line.contains("a/{f}")` substring match
+        // would treat `src/lib` as matching `src/library.rs`. With the
+        // boundary-correct parse, the shorter path's block is *not*
+        // included.
+        let diff = "diff --git a/src/library.rs b/src/library.rs\n\
+                    --- a/src/library.rs\n\
+                    +++ b/src/library.rs\n\
+                    @@\n\
+                    -x\n\
+                    +y\n";
+        let chunk = slice_diff_by_files(diff, &["src/lib".to_owned()]);
+        // No match → fallback returns the whole diff (so the agent always
+        // sees something), but the parser must NOT have considered the
+        // header to have matched the requested path.
+        assert_eq!(chunk, diff);
+    }
+
+    #[test]
+    fn slice_keeps_renamed_files_via_either_a_or_b_path() {
+        // Rename diff: `a/old` and `b/new` differ. The block must be
+        // kept whether the caller asked for the old or new path.
+        let diff = "diff --git a/old/path.rs b/new/path.rs\n\
+                    similarity index 95%\n\
+                    rename from old/path.rs\n\
+                    rename to new/path.rs\n\
+                    --- a/old/path.rs\n\
+                    +++ b/new/path.rs\n\
+                    @@\n\
+                    -x\n\
+                    +y\n";
+        let by_old = slice_diff_by_files(diff, &["old/path.rs".to_owned()]);
+        let by_new = slice_diff_by_files(diff, &["new/path.rs".to_owned()]);
+        assert!(by_old.contains("rename from old/path.rs"));
+        assert!(by_new.contains("rename to new/path.rs"));
+    }
+
+    #[test]
+    fn parse_diff_header_extracts_both_paths() {
+        assert_eq!(
+            parse_diff_header_paths("diff --git a/foo.rs b/foo.rs\n"),
+            Some(("foo.rs", "foo.rs"))
+        );
+        assert_eq!(
+            parse_diff_header_paths("diff --git a/old/x.rs b/new/x.rs\n"),
+            Some(("old/x.rs", "new/x.rs"))
+        );
+    }
+
+    #[test]
+    fn parse_diff_header_returns_none_for_quoted_paths() {
+        // Git quotes paths with spaces; decoding that quoting safely is
+        // non-trivial, so we conservatively fail to parse.
+        assert!(
+            parse_diff_header_paths("diff --git \"a/with space\" \"b/with space\"\n").is_none()
+        );
+    }
+
+    #[test]
+    fn parse_diff_header_returns_none_for_malformed_lines() {
+        assert!(parse_diff_header_paths("nonsense").is_none());
+        assert!(parse_diff_header_paths("diff --git a/only-one-side\n").is_none());
     }
 }

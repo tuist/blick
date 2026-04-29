@@ -32,8 +32,6 @@ pub(super) struct TaskResult {
     pub(super) review_name: String,
     pub(super) outcome: ReviewOutcome,
     pub(super) log_path: PathBuf,
-    #[allow(dead_code)]
-    pub(super) record_path: PathBuf,
 }
 
 pub(super) async fn execute_task(
@@ -52,15 +50,28 @@ pub(super) async fn execute_task(
     .await
     .map_err(|err| (label.clone(), err))?;
 
+    // Log/prompt/record writes are best-effort artifacts; a failure here
+    // (disk full, permission denied) shouldn't void an otherwise-successful
+    // review. Surface a warning so the user can investigate, but keep going.
     let stem = task_log_stem(&task.scope_label, &task.review.name);
     let log_path = logs_dir.join(format!("{stem}.log"));
-    let _ = write_task_log(&log_path, &label, &outcome);
+    if let Err(err) = write_task_log(&log_path, &label, &outcome) {
+        eprintln!(
+            "⚠ {label}: failed to write task log to {}: {err}",
+            log_path.display()
+        );
+    }
 
     // Persist the assembled system prompt alongside the log so contributors
     // can verify which skills + overrides were actually composed for the
     // agent. Also picked up by the `blick-runs` CI artifact.
     let prompt_path = logs_dir.join(format!("{stem}.prompt.md"));
-    let _ = fs::write(&prompt_path, &outcome.system_prompt);
+    if let Err(err) = fs::write(&prompt_path, &outcome.system_prompt) {
+        eprintln!(
+            "⚠ {label}: failed to write prompt to {}: {err}",
+            prompt_path.display()
+        );
+    }
 
     let record = TaskRecord {
         run_id: (*run_id).clone(),
@@ -72,7 +83,12 @@ pub(super) async fn execute_task(
         report: outcome.report.clone(),
     };
     let record_path = logs_dir.join(task_filename(&task.scope_label, &task.review.name));
-    let _ = write_task_record(&record_path, &record);
+    if let Err(err) = write_task_record(&record_path, &record) {
+        eprintln!(
+            "⚠ {label}: failed to write task record to {}: {err}",
+            record_path.display()
+        );
+    }
 
     Ok(TaskResult {
         scope_root: task.scope.root.clone(),
@@ -80,16 +96,21 @@ pub(super) async fn execute_task(
         review_name: task.review.name,
         outcome,
         log_path,
-        record_path,
     })
 }
 
 /// Build a filesystem-safe stem for a task's log + prompt files by joining
-/// the scope label and review name with `--` and replacing `/` in the
-/// scope label with `_` (e.g. `("apps/web", "security")` →
-/// `apps_web--security`).
+/// the scope label and review name with `--` and flattening any path
+/// separators in the scope label to `_`. Both `/` and `\` are flattened so
+/// the function produces the same stem on Unix and Windows — `scope_label`
+/// is built from `Path::display()` upstream, which uses the platform's
+/// native separator.
 fn task_log_stem(scope_label: &str, review_name: &str) -> String {
-    format!("{}--{}", scope_label.replace('/', "_"), review_name)
+    let flat: String = scope_label
+        .chars()
+        .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+        .collect();
+    format!("{flat}--{review_name}")
 }
 
 fn write_task_log(path: &Path, label: &str, outcome: &ReviewOutcome) -> std::io::Result<()> {
@@ -148,6 +169,15 @@ mod tests {
     #[test]
     fn log_stem_replaces_slashes_in_scope_label() {
         assert_eq!(task_log_stem("apps/web", "security"), "apps_web--security");
+    }
+
+    #[test]
+    fn log_stem_replaces_backslashes_too() {
+        // On Windows, `Path::display()` uses `\` as the separator, so the
+        // stem must flatten both. Otherwise the resulting filename
+        // (`apps\web--security.log`) escapes into a subdirectory.
+        assert_eq!(task_log_stem("apps\\web", "security"), "apps_web--security");
+        assert_eq!(task_log_stem("a\\b/c", "review"), "a_b_c--review");
     }
 
     #[test]

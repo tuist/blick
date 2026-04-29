@@ -201,6 +201,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
     update_latest_pointer(&runs_root, &run_id);
 
     let combined = combine_reports(
+        &repo_root,
         completed
             .into_iter()
             .map(|r| (r.scope_root, r.review_name, r.outcome.report))
