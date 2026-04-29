@@ -96,11 +96,12 @@ pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
 
     let total = buckets.total();
     eprintln!(
-        "  {} blick threads (resolved={}, unresolved={}, outdated={})",
+        "  {} threads (blick resolved={}, blick unresolved={}, blick outdated={}, human-authored={})",
         total,
-        buckets.resolved.len(),
-        buckets.unresolved.len(),
-        buckets.outdated.len(),
+        buckets.blick_resolved.len(),
+        buckets.blick_unresolved.len(),
+        buckets.blick_outdated.len(),
+        buckets.human_authored.len(),
     );
 
     if !args.force && (total as u32) < learn_cfg.min_signal {
@@ -114,7 +115,6 @@ pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
     let allowlist_snapshot = collect_allowlist_files(&repo_root)?;
     let proposal = run_agent_pass(
         root_scope,
-        &repo_root,
         &gh_repo,
         &buckets,
         &allowlist_snapshot,
@@ -212,55 +212,71 @@ fn detect_github_repo(repo_root: &Path) -> Result<String, BlickError> {
 #[derive(Debug, Clone)]
 struct PrSummary {
     number: u64,
-    #[allow(dead_code)]
-    title: String,
-    #[allow(dead_code)]
-    merged_at: String,
 }
 
+/// Fetch numbers of every PR merged in `gh_repo` since `cutoff`, using the
+/// search API.
+///
+/// We deliberately use `search/issues` with `is:merged merged:>=DATE` rather
+/// than `repos/.../pulls?state=closed&sort=updated`: the pulls endpoint
+/// orders by `updated_at` (no `merged_at` sort exists), which means a PR
+/// merged before the cutoff but commented on yesterday appears before a
+/// recently-merged PR with no fresh activity, so any "stop when all results
+/// on this page are older" optimization can stop too early. The search API
+/// filters server-side by merge date so we can paginate without that
+/// heuristic.
 fn fetch_recent_merged_prs(
     gh_repo: &str,
     cutoff: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<PrSummary>, BlickError> {
+    let cutoff_date = cutoff.format("%Y-%m-%d").to_string();
+    let query = format!("repo:{gh_repo} is:pr is:merged merged:>={cutoff_date}");
     let mut out = Vec::new();
     let mut page = 1u32;
     loop {
         let path = format!(
-            "repos/{gh_repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
+            "search/issues?q={}&per_page=100&page={page}",
+            percent_encode_query(&query),
         );
-        let raw = gh_api_get(&path)?;
-        let batch: Vec<Value> = serde_json::from_str(&raw)
-            .map_err(|err| BlickError::Api(format!("failed to parse PR list: {err}")))?;
-        let len = batch.len();
-        let mut all_older = !batch.is_empty();
-        for pr in batch {
-            let Some(merged_at) = pr.get("merged_at").and_then(Value::as_str) else {
-                continue;
-            };
-            let parsed = match chrono::DateTime::parse_from_rfc3339(merged_at) {
-                Ok(dt) => dt.with_timezone(&chrono::Utc),
-                Err(_) => continue,
-            };
-            if parsed < cutoff {
-                continue;
+        let raw = gh_api_get_with_retry(&path)?;
+        let response: Value = serde_json::from_str(&raw)
+            .map_err(|err| BlickError::Api(format!("failed to parse search response: {err}")))?;
+        let items = response
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let len = items.len();
+        for item in items {
+            if let Some(number) = item.get("number").and_then(Value::as_u64) {
+                out.push(PrSummary { number });
             }
-            all_older = false;
-            out.push(PrSummary {
-                number: pr.get("number").and_then(Value::as_u64).unwrap_or(0),
-                title: pr
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-                merged_at: merged_at.to_owned(),
-            });
         }
-        if len < 100 || all_older {
+        // The search API caps at 1000 results (10 pages of 100). Stop early
+        // when we drain a partial page or hit the cap.
+        if len < 100 || page >= 10 {
             break;
         }
         page += 1;
     }
     Ok(out)
+}
+
+/// Percent-encode an entire query string for the `q=` parameter of the
+/// search API. Only alphanumerics and a small set of unreserved characters
+/// pass through untouched; everything else (including spaces and `:`) is
+/// `%XX`-encoded so `gh api` doesn't have to interpret it.
+fn percent_encode_query(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,7 +287,31 @@ struct ReviewThread {
     path: Option<String>,
     line: Option<u64>,
     url: Option<String>,
+    /// All comments on the thread in chronological order. The first entry is
+    /// the comment that opened the thread; later entries are replies.
+    comments: Vec<ThreadComment>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ThreadComment {
+    author: String,
+    /// `"Bot"` or `"User"`, as reported by the GraphQL API. Useful when we
+    /// can't pin down the bot login but still want to distinguish the two.
+    author_type: String,
     body: String,
+}
+
+impl ReviewThread {
+    fn first_body(&self) -> &str {
+        self.comments.first().map(|c| c.body.as_str()).unwrap_or("")
+    }
+
+    fn first_author_type(&self) -> &str {
+        self.comments
+            .first()
+            .map(|c| c.author_type.as_str())
+            .unwrap_or("")
+    }
 }
 
 fn fetch_review_threads(gh_repo: &str, pr: u64) -> Result<Vec<ReviewThread>, BlickError> {
@@ -290,8 +330,8 @@ query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
           isOutdated
           path
           line
-          comments(first: 1) {
-            nodes { url body author { login } }
+          comments(first: 20) {
+            nodes { url body author { login __typename } }
           }
         }
       }
@@ -339,15 +379,39 @@ query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
 
         if let Some(nodes) = root.get("nodes").and_then(Value::as_array) {
             for node in nodes {
-                let Some(comment) = node.pointer("/comments/nodes/0").filter(|v| !v.is_null())
-                else {
+                let comment_nodes = node
+                    .pointer("/comments/nodes")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if comment_nodes.is_empty() {
                     continue;
-                };
-                let body = comment
-                    .get("body")
+                }
+                let mut comments: Vec<ThreadComment> = Vec::with_capacity(comment_nodes.len());
+                for c in &comment_nodes {
+                    comments.push(ThreadComment {
+                        author: c
+                            .pointer("/author/login")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                        author_type: c
+                            .pointer("/author/__typename")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                        body: c
+                            .get("body")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                    });
+                }
+                let url = comment_nodes
+                    .first()
+                    .and_then(|c| c.get("url"))
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
+                    .map(ToOwned::to_owned);
                 threads.push(ReviewThread {
                     pr_number: pr,
                     is_resolved: node
@@ -363,11 +427,8 @@ query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned),
                     line: node.get("line").and_then(Value::as_u64),
-                    url: comment
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    body,
+                    url,
+                    comments,
                 });
             }
         }
@@ -393,42 +454,62 @@ query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 enum Bucket {
-    Resolved,
-    Unresolved,
-    Outdated,
+    /// Thread opened by blick that a human resolved (suggestion accepted).
+    BlickResolved,
+    /// Thread opened by blick that was left unresolved on a merged PR
+    /// (suggestion likely ignored).
+    BlickUnresolved,
+    /// Thread opened by blick that GitHub flagged as outdated (ambiguous).
+    BlickOutdated,
+    /// Thread opened by a human reviewer — strong signal of either
+    /// something blick missed, or a class of feedback humans care about
+    /// that the current skills don't cover.
+    HumanAuthored,
 }
 
 fn bucket_for(thread: &ReviewThread) -> Option<Bucket> {
-    if !thread.body.contains(BLICK_COMMENT_SIGNATURE) {
-        return None;
+    let first = thread.first_body();
+    if first.contains(BLICK_COMMENT_SIGNATURE) {
+        if thread.is_outdated {
+            return Some(Bucket::BlickOutdated);
+        }
+        return Some(if thread.is_resolved {
+            Bucket::BlickResolved
+        } else {
+            Bucket::BlickUnresolved
+        });
     }
-    if thread.is_outdated {
-        return Some(Bucket::Outdated);
+    // Treat anything authored by a real user as human feedback. Bots that
+    // aren't blick (other automations) are ignored — their patterns aren't
+    // human review signal and would just add noise.
+    if thread.first_author_type() == "User" {
+        return Some(Bucket::HumanAuthored);
     }
-    if thread.is_resolved {
-        Some(Bucket::Resolved)
-    } else {
-        Some(Bucket::Unresolved)
-    }
+    None
 }
 
 #[derive(Debug, Default, Serialize)]
 struct ThreadBuckets {
-    resolved: Vec<ReviewThread>,
-    unresolved: Vec<ReviewThread>,
-    outdated: Vec<ReviewThread>,
+    blick_resolved: Vec<ReviewThread>,
+    blick_unresolved: Vec<ReviewThread>,
+    blick_outdated: Vec<ReviewThread>,
+    human_authored: Vec<ReviewThread>,
 }
 
 impl ThreadBuckets {
     fn push(&mut self, bucket: Bucket, thread: ReviewThread) {
         match bucket {
-            Bucket::Resolved => self.resolved.push(thread),
-            Bucket::Unresolved => self.unresolved.push(thread),
-            Bucket::Outdated => self.outdated.push(thread),
+            Bucket::BlickResolved => self.blick_resolved.push(thread),
+            Bucket::BlickUnresolved => self.blick_unresolved.push(thread),
+            Bucket::BlickOutdated => self.blick_outdated.push(thread),
+            Bucket::HumanAuthored => self.human_authored.push(thread),
         }
     }
     fn total(&self) -> usize {
-        self.resolved.len() + self.unresolved.len() + self.outdated.len()
+        self.blick_resolved.len()
+            + self.blick_unresolved.len()
+            + self.blick_outdated.len()
+            + self.human_authored.len()
     }
 }
 
@@ -499,7 +580,6 @@ fn collect_allowlist_files(repo_root: &Path) -> Result<Vec<AllowlistFile>, Blick
 
 async fn run_agent_pass(
     scope: &ScopeConfig,
-    _repo_root: &Path,
     gh_repo: &str,
     buckets: &ThreadBuckets,
     allowlist: &[AllowlistFile],
@@ -515,16 +595,18 @@ async fn run_agent_pass(
 const LEARN_SYSTEM_PROMPT: &str = r#"You are Blick's reflection pass. Your job is to inspect how Blick's past code reviews landed with human reviewers and propose improvements to Blick's own review setup (skills, prompts, agent instructions).
 
 You will be given:
-- A bucketed list of Blick's line-comment threads from recent merged PRs:
-  - resolved: a human marked the thread resolved (signal that the suggestion was accepted/addressed)
-  - unresolved: still open on a merged PR (signal that the suggestion was likely ignored or rejected)
-  - outdated: GitHub flagged the thread as out of date (ambiguous; weight low)
+- A bucketed list of review threads from recent merged PRs. Each thread carries the full sequence of comments (opening comment first, then replies), with each comment's author and whether it was authored by a Bot or User:
+  - blick_resolved: thread opened by Blick, then resolved by a human (suggestion accepted/addressed). Replies on these threads can carry nuance — a "this is wrong because…" reply means the human resolved it dismissively, not approvingly.
+  - blick_unresolved: thread opened by Blick, still open on a merged PR (suggestion likely ignored or rejected). Replies often contain the human's reason.
+  - blick_outdated: thread opened by Blick that GitHub flagged as out of date (ambiguous; weight low).
+  - human_authored: thread opened by a human reviewer. This is the strongest signal of what Blick MISSED — categories of feedback humans care about that the current skills don't surface.
 - A snapshot of every file you are allowed to edit (blick.toml, AGENTS.md / CLAUDE.md, and anything under .blick/skills/).
 
 What to look for:
-- Recurring suggestion types that are repeatedly *ignored* — relax or remove the corresponding rule.
-- Recurring suggestion types that are repeatedly *accepted* but phrased poorly (verbose, repetitive, off-tone) — tighten the relevant skill.
-- Themes the data hints Blick is missing entirely — propose a new local skill under .blick/skills/<name>/SKILL.md and reference it from a review in blick.toml.
+- Recurring blick suggestion types that are repeatedly *ignored* (blick_unresolved, or blick_resolved with a dismissive human reply) — relax or remove the corresponding rule.
+- Recurring blick suggestion types that are repeatedly *accepted* (blick_resolved without a pushback reply) but phrased poorly (verbose, repetitive, off-tone) — tighten the relevant skill.
+- Recurring themes in human_authored threads that Blick is missing entirely — propose a new local skill under .blick/skills/<name>/SKILL.md and reference it from a review in blick.toml.
+- Disagreements voiced in replies — a clear "no, X is fine because Y" from a human is strong evidence to weaken or scope down the rule that triggered it.
 
 What NOT to do:
 - Do not propose edits to source code, tests, CI, or anything outside the allowlist.
@@ -565,9 +647,10 @@ fn build_learn_user_prompt(
     let bucketed = json!({
         "repo": gh_repo,
         "lookback_days": lookback_days,
-        "resolved": buckets.resolved,
-        "unresolved": buckets.unresolved,
-        "outdated": buckets.outdated,
+        "blick_resolved": buckets.blick_resolved,
+        "blick_unresolved": buckets.blick_unresolved,
+        "blick_outdated": buckets.blick_outdated,
+        "human_authored": buckets.human_authored,
     });
     let mut out = String::new();
     out.push_str("Past blick review threads (bucketed):\n\n");
@@ -687,7 +770,7 @@ fn apply_and_publish(
     }
 
     let commit_msg = build_commit_message(proposal);
-    git_with_env(
+    git(
         repo_root,
         &[
             "-c",
@@ -883,30 +966,30 @@ fn build_pr_body(proposal: &LearnProposal) -> String {
     out
 }
 
+/// Look up the open PR (if any) whose head branch is `branch` in `gh_repo`,
+/// using `gh pr list`. Delegating to `gh` keeps us out of the
+/// `?head=owner:branch` URL-encoding business and works the same way against
+/// forked PRs and same-repo PRs.
 fn find_existing_pr(gh_repo: &str, branch: &str) -> Result<Option<u64>, BlickError> {
-    let owner = gh_repo.split_once('/').map(|(o, _)| o).unwrap_or("");
-    let head = format!("{owner}:{branch}");
-    let path = format!("repos/{gh_repo}/pulls?state=open&head={}", urlencode(&head));
-    let raw = gh_api_get(&path)?;
-    let prs: Vec<Value> = serde_json::from_str(&raw)
-        .map_err(|err| BlickError::Api(format!("failed to parse PR list: {err}")))?;
+    let output = Command::new("gh")
+        .args([
+            "pr", "list", "--repo", gh_repo, "--head", branch, "--state", "open", "--json",
+            "number", "--limit", "1",
+        ])
+        .output()
+        .map_err(|err| BlickError::Api(format!("failed to run gh pr list: {err}")))?;
+    if !output.status.success() {
+        return Err(BlickError::Api(format!(
+            "gh pr list failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let prs: Vec<Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|err| BlickError::Api(format!("failed to parse gh pr list output: {err}")))?;
     Ok(prs
         .first()
         .and_then(|pr| pr.get("number"))
         .and_then(Value::as_u64))
-}
-
-fn urlencode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", byte)),
-        }
-    }
-    out
 }
 
 fn git(repo_root: &Path, args: &[&str]) -> Result<(), BlickError> {
@@ -925,10 +1008,6 @@ fn git(repo_root: &Path, args: &[&str]) -> Result<(), BlickError> {
     Ok(())
 }
 
-fn git_with_env(repo_root: &Path, args: &[&str]) -> Result<(), BlickError> {
-    git(repo_root, args)
-}
-
 fn git_check(repo_root: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .current_dir(repo_root)
@@ -938,6 +1017,30 @@ fn git_check(repo_root: &Path, args: &[&str]) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Like [`gh_api_get`] but retries once on a transient rate-limit / abuse
+/// failure, with a short backoff. Search and listing endpoints are the only
+/// ones with secondary rate limits this code path realistically hits, so
+/// retry is scoped to the explicit callers rather than smeared across every
+/// `gh_api` invocation.
+fn gh_api_get_with_retry(api_path: &str) -> Result<String, BlickError> {
+    match gh_api_get(api_path) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            let msg = err.to_string().to_lowercase();
+            let transient = msg.contains("rate limit")
+                || msg.contains("secondary rate")
+                || msg.contains("abuse detection")
+                || msg.contains("429");
+            if !transient {
+                return Err(err);
+            }
+            eprintln!("  ⚠ gh api hit a transient limit; retrying once after 5s ({err})");
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            gh_api_get(api_path)
+        }
+    }
 }
 
 fn gh_api_get(api_path: &str) -> Result<String, BlickError> {
@@ -996,7 +1099,15 @@ fn gh_api(api_path: &str, method: &str, body: Option<&str>) -> Result<String, Bl
 mod tests {
     use super::*;
 
-    fn thread(body: &str, resolved: bool, outdated: bool) -> ReviewThread {
+    fn comment(author_type: &str, body: &str) -> ThreadComment {
+        ThreadComment {
+            author: "alice".into(),
+            author_type: author_type.into(),
+            body: body.into(),
+        }
+    }
+
+    fn thread(comments: Vec<ThreadComment>, resolved: bool, outdated: bool) -> ReviewThread {
         ReviewThread {
             pr_number: 1,
             is_resolved: resolved,
@@ -1004,30 +1115,54 @@ mod tests {
             path: Some("src/lib.rs".into()),
             line: Some(1),
             url: Some("https://example/x".into()),
-            body: body.into(),
+            comments,
         }
     }
 
     #[test]
-    fn bucket_only_blick_authored_threads() {
-        let blick = thread(
-            "**foo** body — [Blick](https://github.com/tuist/blick) · default review",
-            true,
-            false,
-        );
-        assert!(matches!(bucket_for(&blick), Some(Bucket::Resolved)));
+    fn bucket_blick_resolved_and_unresolved() {
+        let blick_body = "**foo** body — [Blick](https://github.com/tuist/blick) · default review";
+        let resolved = thread(vec![comment("Bot", blick_body)], true, false);
+        assert!(matches!(bucket_for(&resolved), Some(Bucket::BlickResolved)));
 
-        let other = thread("just a human comment", false, false);
-        assert!(bucket_for(&other).is_none());
+        let unresolved = thread(vec![comment("Bot", blick_body)], false, false);
+        assert!(matches!(
+            bucket_for(&unresolved),
+            Some(Bucket::BlickUnresolved)
+        ));
     }
 
     #[test]
-    fn outdated_overrides_resolved_state() {
-        let mut t = thread("x [Blick](https://github.com/tuist/blick) y", true, true);
-        assert!(matches!(bucket_for(&t), Some(Bucket::Outdated)));
+    fn bucket_human_authored_thread() {
+        let human = thread(
+            vec![comment(
+                "User",
+                "We never validate this input — looks like a bug.",
+            )],
+            false,
+            false,
+        );
+        assert!(matches!(bucket_for(&human), Some(Bucket::HumanAuthored)));
+    }
+
+    #[test]
+    fn other_bot_threads_are_skipped() {
+        let dependabot = thread(
+            vec![comment("Bot", "Bumps foo from 1.0 to 1.1")],
+            false,
+            false,
+        );
+        assert!(bucket_for(&dependabot).is_none());
+    }
+
+    #[test]
+    fn outdated_blick_thread_buckets_as_outdated_regardless_of_resolved_state() {
+        let blick_body = "x [Blick](https://github.com/tuist/blick) y";
+        let mut t = thread(vec![comment("Bot", blick_body)], true, true);
+        assert!(matches!(bucket_for(&t), Some(Bucket::BlickOutdated)));
         t.is_outdated = false;
         t.is_resolved = false;
-        assert!(matches!(bucket_for(&t), Some(Bucket::Unresolved)));
+        assert!(matches!(bucket_for(&t), Some(Bucket::BlickUnresolved)));
     }
 
     #[test]
@@ -1068,6 +1203,99 @@ mod tests {
         let noisy = "Sure, here is the proposal:\n```json\n{\"themes\":[],\"edits\":[]}\n```\n";
         let p = parse_proposal(noisy).unwrap();
         assert!(p.themes.is_empty());
+    }
+
+    #[test]
+    fn percent_encode_query_escapes_separators_and_keeps_unreserved() {
+        // Spaces, colons, and `>` (used by `merged:>=DATE`) must be encoded
+        // so `gh api` doesn't have to interpret them.
+        assert_eq!(
+            percent_encode_query("repo:tuist/blick is:pr is:merged merged:>=2026-04-22"),
+            "repo%3Atuist%2Fblick%20is%3Apr%20is%3Amerged%20merged%3A%3E%3D2026-04-22"
+        );
+        // Unreserved characters per RFC 3986 pass through untouched.
+        assert_eq!(percent_encode_query("a-Z_0.9~"), "a-Z_0.9~");
+    }
+
+    #[test]
+    fn pr_title_is_conventional_commit_with_lead_themes() {
+        let with_themes = LearnProposal {
+            themes: vec![
+                Theme {
+                    title: "noisy async warning".into(),
+                    rationale: "x".into(),
+                    evidence: vec![],
+                },
+                Theme {
+                    title: "missing tokio-channels skill".into(),
+                    rationale: "y".into(),
+                    evidence: vec![],
+                },
+                Theme {
+                    title: "third theme".into(),
+                    rationale: "z".into(),
+                    evidence: vec![],
+                },
+            ],
+            edits: vec![],
+        };
+        let title = pr_title(&with_themes);
+        assert!(title.starts_with("chore(learn): "));
+        assert!(title.contains("noisy async warning"));
+        assert!(title.contains("missing tokio-channels skill"));
+        // Only the first two themes are folded into the title — the third
+        // would push the subject past readable length.
+        assert!(!title.contains("third theme"));
+
+        let empty = LearnProposal {
+            themes: vec![],
+            edits: vec![],
+        };
+        assert_eq!(
+            pr_title(&empty),
+            "chore(learn): tune review setup from recent feedback"
+        );
+    }
+
+    #[test]
+    fn build_commit_message_includes_themes_in_body() {
+        let proposal = LearnProposal {
+            themes: vec![Theme {
+                title: "noisy async warning".into(),
+                rationale: "Ignored 4/5 times.".into(),
+                evidence: vec![],
+            }],
+            edits: vec![],
+        };
+        let msg = build_commit_message(&proposal);
+        let mut lines = msg.lines();
+        assert_eq!(
+            lines.next(),
+            Some("chore(learn): noisy async warning"),
+            "subject must use conventional-commit prefix"
+        );
+        assert!(msg.contains("Ignored 4/5 times."));
+    }
+
+    #[test]
+    fn extract_json_block_handles_prose_and_braces_in_strings() {
+        // Plain text wrapping a single JSON object — pull out just the object.
+        assert_eq!(
+            extract_json_block("noise before {\"a\":1} noise after").as_deref(),
+            Some("{\"a\":1}")
+        );
+        // Nested braces are tracked by depth so the first balanced object wins.
+        assert_eq!(
+            extract_json_block("{\"a\":{\"b\":2},\"c\":3}").as_deref(),
+            Some("{\"a\":{\"b\":2},\"c\":3}")
+        );
+        // No object at all → None.
+        assert!(extract_json_block("plain text, no json").is_none());
+    }
+
+    #[test]
+    fn parse_proposal_rejects_non_json() {
+        assert!(parse_proposal("definitely not json").is_err());
     }
 
     #[test]

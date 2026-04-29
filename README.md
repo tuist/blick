@@ -332,13 +332,14 @@ It's also worth scoping the workflow to PRs from branches inside the repository 
 
 ### What it learns from
 
-For every PR merged in the lookback window, learn pulls the PR's review threads via the GraphQL API and filters to threads authored by blick (recognized by the `[Blick](https://github.com/tuist/blick)` footer every line comment carries). Each thread is bucketed:
+For every PR merged in the lookback window, learn pulls every review thread via the GraphQL API along with the full sequence of comments on each thread (so human replies on blick's threads aren't lost). Threads are bucketed:
 
-- **resolved** (and not outdated) — a human marked the thread done; suggestion was accepted.
-- **unresolved** (on a merged PR) — suggestion was likely ignored or rejected.
-- **outdated** — GitHub flagged the thread as out of date; ambiguous, weighted low.
+- **blick_resolved** (and not outdated) — blick opened the thread, a human resolved it; replies on these threads can carry nuance ("resolved but actually wrong because…").
+- **blick_unresolved** (on a merged PR) — blick's suggestion was likely ignored or rejected; replies often contain the human's reason.
+- **blick_outdated** — GitHub flagged the thread as out of date; ambiguous, weighted low.
+- **human_authored** — opened by a human reviewer; the strongest signal of *what blick missed* — categories of feedback humans care about that the current skills don't surface.
 
-The agent gets the bucketed threads plus the current contents of every file it's allowed to edit, and is asked to surface recurring patterns: noisy rules to relax, accepted-but-poorly-phrased rules to tighten, and missing skills to add.
+The agent gets the bucketed threads plus the current contents of every file it's allowed to edit, and is asked to surface recurring patterns: noisy blick rules to relax, accepted-but-poorly-phrased rules to tighten, and missing skills to add based on what humans flagged that blick didn't.
 
 ### What it can edit
 
