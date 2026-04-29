@@ -74,6 +74,13 @@ pub fn fetch_blick_inline_comments(
     repo: &str,
     pr: u64,
 ) -> Result<Vec<InlineCommentKey>, BlickError> {
+    // Sanity cap on pagination. 20 pages × 100 per page = 2000 comments,
+    // which is far more than any real review thread; a runaway loop here
+    // would burn the Actions runner's GH API budget and stall the publish
+    // step. If a PR ever does exceed this, missing the tail just means a
+    // few duplicate findings on the next push — strictly preferable to a
+    // hang.
+    const MAX_PAGES: u32 = 20;
     let mut all: Vec<Value> = Vec::new();
     let mut page = 1u32;
     loop {
@@ -85,6 +92,13 @@ pub fn fetch_blick_inline_comments(
         let len = batch.len();
         all.extend(batch);
         if len < 100 {
+            break;
+        }
+        if page >= MAX_PAGES {
+            eprintln!(
+                "⚠ stopped fetching PR comments at page {MAX_PAGES} (>{} comments); dedupe may miss the tail",
+                MAX_PAGES * 100
+            );
             break;
         }
         page += 1;
