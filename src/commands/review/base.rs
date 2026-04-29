@@ -1,6 +1,8 @@
 //! Choosing the diff base — explicit `--base` wins, otherwise pick the
-//! scope's configured default; in CI on a PR, attempt to upgrade that base
-//! to the SHA of our last review so subsequent runs are incremental.
+//! scope's configured default. In CI on a PR, also resolve a *focus base*
+//! (the SHA of our last review) which is sent to the agent as a hint to
+//! limit findings to lines changed since — independent of `--base`, which
+//! continues to pick the full-PR diff for context.
 
 use std::env;
 use std::fs;
@@ -21,36 +23,30 @@ pub(super) fn resolve_base(scopes: &[ScopeConfig], cli_base: Option<&str>) -> St
         .unwrap_or_else(|| "HEAD".to_owned())
 }
 
-/// When running inside GitHub Actions on a pull request, look up the SHA of
-/// the previous blick review (encoded in a hidden marker on the review body)
-/// and use it as the diff base, so we only re-review what changed since.
-/// Falls back to `configured_base` whenever anything is missing or the SHA
-/// is not reachable in the local clone.
-pub(super) fn resolve_incremental_base(repo_root: &Path, configured_base: &str) -> String {
-    let Some((repo, pr)) = detect_pr_context() else {
-        return configured_base.to_owned();
-    };
+/// Look up the SHA of the previous blick review on this PR (encoded in a
+/// hidden marker on the review body) so we can ask the agent to focus on
+/// changes since. Independent of `--base`: the full PR diff is still sent
+/// as context. Returns `None` when there's no PR context, no prior review,
+/// or the SHA isn't reachable in the local clone.
+pub(super) fn resolve_focus_base(repo_root: &Path) -> Option<String> {
+    let (repo, pr) = detect_pr_context()?;
 
     let sha = match fetch_last_reviewed_sha(&repo, pr) {
         Ok(Some(sha)) => sha,
-        Ok(None) => return configured_base.to_owned(),
+        Ok(None) => return None,
         Err(err) => {
-            eprintln!(
-                "ℹ could not fetch prior blick reviews ({err}); falling back to {configured_base}"
-            );
-            return configured_base.to_owned();
+            eprintln!("ℹ could not fetch prior blick reviews ({err}); reviewing full PR");
+            return None;
         }
     };
 
     if !revision_exists(repo_root, &sha) {
-        eprintln!(
-            "ℹ last-reviewed SHA {sha} is not reachable locally; falling back to {configured_base}"
-        );
-        return configured_base.to_owned();
+        eprintln!("ℹ last-reviewed SHA {sha} is not reachable locally; reviewing full PR");
+        return None;
     }
 
-    eprintln!("▶ incremental review against last-reviewed SHA {sha}");
-    sha
+    eprintln!("▶ focus mode: previous blick review at {sha}");
+    Some(sha)
 }
 
 fn detect_pr_context() -> Option<(String, u64)> {

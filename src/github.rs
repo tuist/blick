@@ -55,6 +55,98 @@ fn is_blick_authored(review: &Value, body: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Identifying tuple of a previously-posted inline review comment, used to
+/// dedupe future runs against findings the bot has already raised on this
+/// PR. We key on the *literal body* because every blick comment embeds the
+/// finding title and body verbatim — same finding → identical body string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InlineCommentKey {
+    pub path: String,
+    pub line: u64,
+    pub body: String,
+}
+
+/// Fetch every blick-authored inline review comment on a PR. Returns an
+/// empty list (not an error) when there are no prior comments. Comments
+/// without a resolvable line, or authored by non-bots / non-blick reviews,
+/// are dropped — only blick's own prior findings count toward dedupe.
+pub fn fetch_blick_inline_comments(
+    repo: &str,
+    pr: u64,
+) -> Result<Vec<InlineCommentKey>, BlickError> {
+    // Sanity cap on pagination. 20 pages × 100 per page = 2000 comments,
+    // which is far more than any real review thread; a runaway loop here
+    // would burn the Actions runner's GH API budget and stall the publish
+    // step. If a PR ever does exceed this, missing the tail just means a
+    // few duplicate findings on the next push — strictly preferable to a
+    // hang.
+    const MAX_PAGES: u32 = 20;
+    let mut all: Vec<Value> = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let raw = gh_api_get(&format!(
+            "repos/{repo}/pulls/{pr}/comments?per_page=100&page={page}"
+        ))?;
+        let batch: Vec<Value> = serde_json::from_str(&raw)
+            .map_err(|err| BlickError::Api(format!("failed to parse PR comments JSON: {err}")))?;
+        let len = batch.len();
+        all.extend(batch);
+        if len < 100 {
+            break;
+        }
+        if page >= MAX_PAGES {
+            eprintln!(
+                "⚠ stopped fetching PR comments at page {MAX_PAGES} (>{} comments); dedupe may miss the tail",
+                MAX_PAGES * 100
+            );
+            break;
+        }
+        page += 1;
+    }
+
+    let keys = all
+        .iter()
+        .filter_map(extract_blick_comment_key)
+        .collect::<Vec<_>>();
+    Ok(keys)
+}
+
+fn extract_blick_comment_key(comment: &Value) -> Option<InlineCommentKey> {
+    let body = comment.get("body").and_then(Value::as_str)?;
+    if !is_blick_authored_comment(comment, body) {
+        return None;
+    }
+    // `line` is the latest line in the head; `original_line` is where the
+    // comment was first anchored. Prefer `line` so a comment that has
+    // followed the diff still keys against its current location, matching
+    // what we'd post for the same finding now.
+    let line = comment
+        .get("line")
+        .and_then(Value::as_u64)
+        .or_else(|| comment.get("original_line").and_then(Value::as_u64))?;
+    let path = comment.get("path").and_then(Value::as_str)?.to_owned();
+    Some(InlineCommentKey {
+        path,
+        line,
+        body: body.to_owned(),
+    })
+}
+
+fn is_blick_authored_comment(comment: &Value, body: &str) -> bool {
+    // Blick inline comment bodies always carry the canonical Blick footer
+    // link. Combined with the bot-only author check this is enough to keep
+    // arbitrary humans/bots from poisoning the dedupe set.
+    if !body.contains("https://github.com/tuist/blick") {
+        return false;
+    }
+    comment
+        .get("user")
+        .and_then(|u| u.get("type"))
+        .and_then(|t| t.as_str())
+        .map(|t| t == "Bot")
+        .unwrap_or(false)
+}
+
 fn fetch_all_reviews(repo: &str, pr: u64) -> Result<Vec<Value>, BlickError> {
     let mut all: Vec<Value> = Vec::new();
     let mut page = 1u32;
@@ -116,6 +208,54 @@ mod tests {
         });
         let body = review["body"].as_str().unwrap();
         assert!(!is_blick_authored(&review, body));
+    }
+
+    #[test]
+    fn extracts_blick_inline_comment_key() {
+        let comment = json!({
+            "path": "src/foo.rs",
+            "line": 42,
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": "**title**\n\nbody\n\n— [Blick](https://github.com/tuist/blick) · `web` review",
+        });
+        let key = extract_blick_comment_key(&comment).expect("blick comment should extract");
+        assert_eq!(key.path, "src/foo.rs");
+        assert_eq!(key.line, 42);
+    }
+
+    #[test]
+    fn ignores_non_blick_inline_comment() {
+        let comment = json!({
+            "path": "src/foo.rs",
+            "line": 42,
+            "user": {"type": "Bot", "login": "other-bot"},
+            "body": "some other automation comment without the blick footer",
+        });
+        assert!(extract_blick_comment_key(&comment).is_none());
+    }
+
+    #[test]
+    fn ignores_human_inline_comment_even_with_link() {
+        let comment = json!({
+            "path": "src/foo.rs",
+            "line": 42,
+            "user": {"type": "User", "login": "rando"},
+            "body": "fyi https://github.com/tuist/blick",
+        });
+        assert!(extract_blick_comment_key(&comment).is_none());
+    }
+
+    #[test]
+    fn falls_back_to_original_line_when_line_is_null() {
+        let comment = json!({
+            "path": "src/foo.rs",
+            "line": null,
+            "original_line": 10,
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": "see [Blick](https://github.com/tuist/blick) review",
+        });
+        let key = extract_blick_comment_key(&comment).expect("should extract via original_line");
+        assert_eq!(key.line, 10);
     }
 
     #[test]

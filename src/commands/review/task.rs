@@ -10,7 +10,7 @@ use crate::agent::AgentRunner;
 use crate::config::{ReviewEntry, ScopeConfig};
 use crate::error::BlickError;
 use crate::git::DiffBundle;
-use crate::review::{ReviewOutcome, run_review};
+use crate::review::{FocusDiff, ReviewOutcome, run_review};
 use crate::run_record::{TaskRecord, task_filename, write_task_record};
 
 /// Everything a single task needs to do its work. Held by value so it can
@@ -22,6 +22,7 @@ pub(super) struct TaskInput {
     pub(super) review: ReviewEntry,
     pub(super) base: String,
     pub(super) diff: DiffBundle,
+    pub(super) focus: Option<FocusDiff>,
 }
 
 /// Successful task output. Errors are returned as `(label, error)` so the
@@ -46,6 +47,7 @@ pub(super) async fn execute_task(
         &task.review,
         &task.base,
         &task.diff,
+        task.focus.as_ref(),
     )
     .await
     .map_err(|err| (label.clone(), err))?;

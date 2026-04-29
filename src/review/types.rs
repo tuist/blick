@@ -36,6 +36,20 @@ pub struct Finding {
     pub body: String,
 }
 
+/// Optional "focus" the agent is told to constrain its findings to. The full
+/// diff is still sent as context (so the agent can reason about callers and
+/// surrounding code), but findings should only be raised about lines that
+/// appear in the focus diff. Used to suppress repeat findings on already-
+/// reviewed code as a PR grows over multiple pushes.
+#[derive(Debug, Clone)]
+pub struct FocusDiff {
+    /// Revision the focus diff was computed against (e.g. the SHA of a
+    /// previous blick review).
+    pub base: String,
+    /// Unified diff of `focus.base..HEAD` — possibly per-scope sliced.
+    pub diff: String,
+}
+
 /// Outcome of a single `(scope, review)` execution.
 #[derive(Debug, Clone)]
 pub struct ReviewOutcome {

@@ -19,7 +19,7 @@ use crate::git::DiffBundle;
 
 pub use parse::parse_report;
 pub use render::render_report;
-pub use types::{Finding, ReviewOutcome, ReviewReport};
+pub use types::{Finding, FocusDiff, ReviewOutcome, ReviewReport};
 
 use prompt::{build_system_prompt, build_user_prompt, collect_prompt_addendum, collect_skills};
 
@@ -30,11 +30,12 @@ pub async fn run_review(
     review: &ReviewEntry,
     base: &str,
     diff: &DiffBundle,
+    focus: Option<&FocusDiff>,
 ) -> Result<ReviewOutcome, BlickError> {
     let skills = collect_skills(scope, review)?;
     let prompt_addendum = collect_prompt_addendum(scope, review)?;
-    let system_prompt = build_system_prompt(&skills, prompt_addendum.as_deref());
-    let user_prompt = build_user_prompt(base, diff);
+    let system_prompt = build_system_prompt(&skills, prompt_addendum.as_deref(), focus.is_some());
+    let user_prompt = build_user_prompt(base, diff, focus);
 
     let run = runner.run(&system_prompt, &user_prompt).await?;
     let report = parse_report(&run.text)?;

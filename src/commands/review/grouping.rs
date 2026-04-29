@@ -46,6 +46,27 @@ pub(super) fn group_changes_by_scope(
 }
 
 /// Extract just the file-blocks of `diff` whose `diff --git` header
+/// references one of `files`. Returns an empty string when nothing
+/// matches — for the focus-diff path where "this scope wasn't touched in
+/// the latest push" must surface as "no findings to raise" rather than
+/// silently widening to other scopes' changes.
+pub(super) fn slice_focus_diff_by_files(diff: &str, files: &[String]) -> String {
+    let mut out = String::new();
+    let mut current_keep = false;
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            current_keep = parse_diff_header_paths(line)
+                .map(|(a, b)| files.iter().any(|f| f == a || f == b))
+                .unwrap_or(false);
+        }
+        if current_keep {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// Extract just the file-blocks of `diff` whose `diff --git` header
 /// references one of `files`. Falls back to the full diff if nothing
 /// matches (so we don't accidentally hand the agent an empty diff).
 fn slice_diff_by_files(diff: &str, files: &[String]) -> String {
@@ -114,6 +135,22 @@ diff --git a/server/lib.rs b/server/lib.rs\n\
     #[test]
     fn slice_keeps_only_matching_file_blocks() {
         let chunk = slice_diff_by_files(SAMPLE_DIFF, &["apps/web/main.rs".to_owned()]);
+        assert!(chunk.contains("a/apps/web/main.rs"));
+        assert!(!chunk.contains("server/lib.rs"));
+    }
+
+    #[test]
+    fn focus_slice_returns_empty_when_no_files_match() {
+        // Unlike the regular slicer which falls back to the whole diff,
+        // the focus slicer must surface "this scope wasn't touched" as an
+        // empty diff so the agent doesn't see other scopes' changes.
+        let chunk = slice_focus_diff_by_files(SAMPLE_DIFF, &["nope/missing.rs".to_owned()]);
+        assert!(chunk.is_empty());
+    }
+
+    #[test]
+    fn focus_slice_keeps_only_matching_blocks() {
+        let chunk = slice_focus_diff_by_files(SAMPLE_DIFF, &["apps/web/main.rs".to_owned()]);
         assert!(chunk.contains("a/apps/web/main.rs"));
         assert!(!chunk.contains("server/lib.rs"));
     }

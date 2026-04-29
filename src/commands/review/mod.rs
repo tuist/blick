@@ -18,12 +18,12 @@ use crate::agent::{AgentRunner, runner_for};
 use crate::cli::ReviewArgs;
 use crate::error::BlickError;
 use crate::git::collect_diff_in;
-use crate::review::{ReviewReport, render_report};
+use crate::review::{FocusDiff, ReviewReport, render_report};
 use crate::run_record::{RunManifest, TaskRef, task_filename, write_manifest};
 use crate::scope::load_scopes;
 
-use base::{resolve_base, resolve_incremental_base};
-use grouping::group_changes_by_scope;
+use base::{resolve_base, resolve_focus_base};
+use grouping::{group_changes_by_scope, slice_focus_diff_by_files};
 use labels::{combine_reports, scope_label_for};
 use overrides::apply_agent_overrides;
 use run_dir::update_latest_pointer;
@@ -45,14 +45,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
 
     apply_agent_overrides(&mut scopes, args.agent, args.model.as_deref());
 
-    let configured_base = resolve_base(&scopes, args.base.as_deref());
-    let base = if args.base.is_some() {
-        // An explicit `--base` is honoured verbatim; the incremental marker
-        // is only consulted when blick is auto-detecting a base in CI.
-        configured_base
-    } else {
-        resolve_incremental_base(&repo_root, &configured_base)
-    };
+    let base = resolve_base(&scopes, args.base.as_deref());
     // The `scopes.is_empty()` guard above means `.max()` always yields a
     // value; the canonical default lives in `EffectiveDefaults::default()`
     // and is propagated through every scope by `scope::inherit::build_scope`.
@@ -62,6 +55,23 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
         .max()
         .expect("scopes is non-empty (checked above)");
     let diff = collect_diff_in(&repo_root, &base, max_diff)?;
+
+    // The focus base is independent of `--base`: we always send the full PR
+    // diff to the agent so it has context, and *additionally* tell it to
+    // only raise findings on changes since the previous blick review.
+    let focus_base = resolve_focus_base(&repo_root);
+    let focus_full_diff = match &focus_base {
+        Some(sha) => match collect_diff_in(&repo_root, sha, max_diff) {
+            Ok(focus_bundle) => Some(focus_bundle.diff),
+            Err(err) => {
+                eprintln!(
+                    "ℹ could not collect focus diff against {sha} ({err}); reviewing full PR"
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
     if diff.diff.is_empty() {
         let report = ReviewReport::empty(format!("No tracked changes found relative to {base}."));
@@ -115,6 +125,13 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
             None => scope.reviews.to_vec(),
         };
         let scope_arc = Arc::new(scope);
+        let scoped_focus = focus_base.as_ref().map(|sha| FocusDiff {
+            base: sha.clone(),
+            diff: focus_full_diff
+                .as_deref()
+                .map(|d| slice_focus_diff_by_files(d, &scoped_diff.files))
+                .unwrap_or_default(),
+        });
         for review_entry in reviews_to_run {
             tasks.push(TaskInput {
                 scope: scope_arc.clone(),
@@ -123,6 +140,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
                 review: review_entry,
                 base: base.clone(),
                 diff: scoped_diff.clone(),
+                focus: scoped_focus.clone(),
             });
         }
     }

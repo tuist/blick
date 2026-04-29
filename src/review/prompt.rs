@@ -5,12 +5,20 @@ use std::path::Path;
 use crate::config::{ReviewEntry, ScopeConfig};
 use crate::error::BlickError;
 use crate::git::DiffBundle;
+use crate::review::types::FocusDiff;
 use crate::skill::{LoadedSkill, load as load_skill};
 
 const BASE_SYSTEM_PROMPT: &str = r#"You are Blick, a careful code review agent.
 
 Review the provided git diff for correctness issues, regressions, security problems, maintainability risks, and meaningful testing gaps.
 Only use the diff and file list provided. Do not assume access to the repository, filesystem, tools, or test results."#;
+
+const FOCUS_MODE_INSTRUCTION: &str = r#"This PR has been reviewed before. The user prompt contains two diffs:
+
+1. **Full PR diff** — included as context so you can understand surrounding code, callers, types, and prior changes.
+2. **Focus diff** — the changes pushed since the previous blick review.
+
+Only raise findings about lines that appear in the **focus diff**. Use the full diff to inform your reasoning (e.g. to spot a regression introduced by the new changes against earlier code in the same PR), but do not re-flag pre-existing issues that lie entirely outside the focus diff — they were already reviewed. If the focus diff is empty, return no findings."#;
 
 const JSON_SCHEMA_INSTRUCTION: &str = r#"Return only valid JSON with this shape:
 {
@@ -81,10 +89,19 @@ pub(super) fn collect_prompt_addendum(
     }
 }
 
-/// Assemble the system prompt: base instructions + skill bodies +
-/// review-specific addendum + JSON schema instruction.
-pub(super) fn build_system_prompt(skills: &[LoadedSkill], addendum: Option<&str>) -> String {
+/// Assemble the system prompt: base instructions + (optional focus-mode
+/// instruction) + skill bodies + review-specific addendum + JSON schema
+/// instruction.
+pub(super) fn build_system_prompt(
+    skills: &[LoadedSkill],
+    addendum: Option<&str>,
+    focus_mode: bool,
+) -> String {
     let mut parts = vec![BASE_SYSTEM_PROMPT.to_owned()];
+
+    if focus_mode {
+        parts.push(FOCUS_MODE_INSTRUCTION.to_owned());
+    }
 
     if !skills.is_empty() {
         parts.push("Apply the following skills (analyses) to the diff:".to_owned());
@@ -107,8 +124,15 @@ pub(super) fn build_system_prompt(skills: &[LoadedSkill], addendum: Option<&str>
     parts.join("\n\n")
 }
 
-/// Render the user-prompt payload describing the diff to review.
-pub(super) fn build_user_prompt(base: &str, diff: &DiffBundle) -> String {
+/// Render the user-prompt payload describing the diff to review. When
+/// `focus` is provided, append a second diff section so the agent can
+/// distinguish pre-existing changes (context) from changes pushed since the
+/// previous blick review (the focus).
+pub(super) fn build_user_prompt(
+    base: &str,
+    diff: &DiffBundle,
+    focus: Option<&FocusDiff>,
+) -> String {
     let truncated_note = if diff.truncated {
         "The diff was truncated to stay within the configured limit."
     } else {
@@ -120,10 +144,24 @@ pub(super) fn build_user_prompt(base: &str, diff: &DiffBundle) -> String {
         diff.files.join("\n")
     };
 
-    format!(
-        "Base revision: {base}\n{truncated_note}\n\nChanged files:\n{files}\n\nUnified diff:\n{}\n",
+    let mut prompt = format!(
+        "Base revision: {base}\n{truncated_note}\n\nChanged files:\n{files}\n\nFull PR diff (context):\n{}\n",
         diff.diff
-    )
+    );
+
+    if let Some(focus) = focus {
+        let focus_diff = if focus.diff.trim().is_empty() {
+            "(no changes since the previous blick review)".to_owned()
+        } else {
+            focus.diff.clone()
+        };
+        prompt.push_str(&format!(
+            "\nFocus diff (changes since last blick review at {}):\n{focus_diff}\n",
+            focus.base
+        ));
+    }
+
+    prompt
 }
 
 #[cfg(test)]
@@ -140,29 +178,39 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_base_and_schema() {
-        let prompt = build_system_prompt(&[], None);
+        let prompt = build_system_prompt(&[], None, false);
         assert!(prompt.contains("You are Blick"));
         assert!(prompt.contains("\"summary\": \"short summary\""));
     }
 
     #[test]
     fn system_prompt_inlines_skill_bodies_with_separators() {
-        let prompt = build_system_prompt(&[loaded("security", "look for unsafe blocks")], None);
+        let prompt =
+            build_system_prompt(&[loaded("security", "look for unsafe blocks")], None, false);
         assert!(prompt.contains("--- skill: security ---"));
         assert!(prompt.contains("look for unsafe blocks"));
     }
 
     #[test]
     fn system_prompt_drops_blank_addendum() {
-        let prompt = build_system_prompt(&[], Some("   \n\n  "));
+        let prompt = build_system_prompt(&[], Some("   \n\n  "), false);
         // Blank addendum shouldn't add an extra section before the schema.
         assert!(!prompt.contains("\n\n\n\n"));
     }
 
     #[test]
     fn system_prompt_includes_non_blank_addendum() {
-        let prompt = build_system_prompt(&[], Some("focus on security"));
+        let prompt = build_system_prompt(&[], Some("focus on security"), false);
         assert!(prompt.contains("focus on security"));
+    }
+
+    #[test]
+    fn system_prompt_adds_focus_instruction_in_focus_mode() {
+        let plain = build_system_prompt(&[], None, false);
+        assert!(!plain.contains("focus diff"));
+        let focus = build_system_prompt(&[], None, true);
+        assert!(focus.contains("focus diff"));
+        assert!(focus.contains("Only raise findings"));
     }
 
     #[test]
@@ -172,7 +220,7 @@ mod tests {
             files: vec!["a".into()],
             truncated: true,
         };
-        let prompt = build_user_prompt("origin/main", &diff);
+        let prompt = build_user_prompt("origin/main", &diff, None);
         assert!(prompt.contains("Base revision: origin/main"));
         assert!(prompt.contains("diff was truncated"));
         assert!(prompt.contains("a"));
@@ -185,8 +233,52 @@ mod tests {
             files: vec![],
             truncated: false,
         };
-        let prompt = build_user_prompt("HEAD~1", &diff);
+        let prompt = build_user_prompt("HEAD~1", &diff, None);
         assert!(prompt.contains("git diff did not report any tracked files"));
         assert!(prompt.contains("The diff is complete."));
+    }
+
+    #[test]
+    fn user_prompt_omits_focus_section_when_no_focus_provided() {
+        let diff = DiffBundle {
+            diff: "x".into(),
+            files: vec!["src/main.rs".into()],
+            truncated: false,
+        };
+        let prompt = build_user_prompt("origin/main", &diff, None);
+        assert!(prompt.contains("Full PR diff (context):"));
+        assert!(!prompt.contains("Focus diff"));
+    }
+
+    #[test]
+    fn user_prompt_includes_focus_section_when_focus_provided() {
+        let diff = DiffBundle {
+            diff: "diff --git a/src/main.rs b/src/main.rs\n@@\n+x\n".into(),
+            files: vec!["src/main.rs".into()],
+            truncated: false,
+        };
+        let focus = FocusDiff {
+            base: "abc1234".into(),
+            diff: "diff --git a/src/main.rs b/src/main.rs\n@@\n+y\n".into(),
+        };
+        let prompt = build_user_prompt("origin/main", &diff, Some(&focus));
+        assert!(prompt.contains("Full PR diff (context):"));
+        assert!(prompt.contains("Focus diff (changes since last blick review at abc1234):"));
+        assert!(prompt.contains("+y"));
+    }
+
+    #[test]
+    fn user_prompt_handles_empty_focus_diff() {
+        let diff = DiffBundle {
+            diff: "context".into(),
+            files: vec![],
+            truncated: false,
+        };
+        let focus = FocusDiff {
+            base: "abc1234".into(),
+            diff: String::new(),
+        };
+        let prompt = build_user_prompt("origin/main", &diff, Some(&focus));
+        assert!(prompt.contains("(no changes since the previous blick review)"));
     }
 }
