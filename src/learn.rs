@@ -113,7 +113,15 @@ pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
         return Ok(());
     }
 
-    let allowlist_snapshot = collect_allowlist_files(&repo_root)?;
+    // The allowlist scan walks `.blick/skills/**` and reads every file —
+    // bounded but still blocking I/O, so push it onto the blocking pool to
+    // keep the async runtime free.
+    let allowlist_snapshot = {
+        let repo_root = repo_root.clone();
+        tokio::task::spawn_blocking(move || collect_allowlist_files(&repo_root))
+            .await
+            .map_err(|err| BlickError::Api(format!("allowlist scan join failed: {err}")))??
+    };
     let proposal = run_agent_pass(
         root_scope,
         &gh_repo,
@@ -148,7 +156,22 @@ pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
         return Ok(());
     }
 
-    apply_and_publish(&repo_root, &gh_repo, &learn_cfg, &proposal)?;
+    // `apply_and_publish` chains a series of `git` and `gh` subprocesses
+    // and writes files — all blocking. Run it on the blocking pool so the
+    // runtime can keep handling other tasks while it waits.
+    let repo_root_for_publish = repo_root.clone();
+    let gh_repo_for_publish = gh_repo.clone();
+    let learn_cfg_for_publish = learn_cfg.clone();
+    tokio::task::spawn_blocking(move || {
+        apply_and_publish(
+            &repo_root_for_publish,
+            &gh_repo_for_publish,
+            &learn_cfg_for_publish,
+            &proposal,
+        )
+    })
+    .await
+    .map_err(|err| BlickError::Api(format!("apply_and_publish join failed: {err}")))??;
     Ok(())
 }
 
@@ -698,20 +721,58 @@ fn parse_proposal(raw: &str) -> Result<LearnProposal, BlickError> {
 }
 
 fn extract_json_block(raw: &str) -> Option<String> {
-    let start = raw.find('{')?;
-    let mut depth = 0usize;
-    for (offset, ch) in raw[start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let end = start + offset + ch.len_utf8();
-                    return Some(raw[start..end].to_owned());
-                }
-            }
-            _ => {}
+    // Same approach as `review::extract_json_block`: try every `{` as a
+    // start, with a depth walker that ignores braces inside JSON string
+    // literals, and return the first balanced object that round-trips
+    // through `serde_json` as a `LearnProposal`. Robust to prose prefixes
+    // that contain stray braces.
+    let bytes = raw.as_bytes();
+    for (start, _) in raw.match_indices('{') {
+        let Some(end) = balanced_object_end(&bytes[start..]) else {
+            continue;
+        };
+        let Some(slice) = raw.get(start..start + end) else {
+            continue;
+        };
+        if serde_json::from_str::<LearnProposal>(slice).is_ok() {
+            return Some(slice.to_owned());
         }
+    }
+    None
+}
+
+fn balanced_object_end(bytes: &[u8]) -> Option<usize> {
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
     }
     None
 }
@@ -841,6 +902,18 @@ fn apply_and_publish(
     Ok(())
 }
 
+/// Refuse to overwrite the rolling learn branch when commits ahead of
+/// `base` were authored by anyone other than the learn bot identity.
+///
+/// We compare commit-author email against [`COMMIT_AUTHOR_EMAIL`]. Email is
+/// not a strong identity — anyone with push access could set the same
+/// `user.email` in their own git config and slip a commit through this
+/// guard. That's accepted by design: the learn workflow runs with the
+/// repo's `GITHUB_TOKEN`, so the only callers who can push to this branch
+/// in practice are workflow runs and repo maintainers, and the guard only
+/// exists to prevent the workflow from clobbering its own pushes — not as
+/// a hostile-user defense. Branch protection or signed-commit verification
+/// would be the right knob if a stronger check were ever needed.
 fn ensure_branch_owned(repo_root: &Path, branch: &str, base: &str) -> Result<(), BlickError> {
     let output = Command::new("git")
         .current_dir(repo_root)
