@@ -241,23 +241,62 @@ fn extract_json_block(raw: &str) -> Option<String> {
         }
     }
 
-    let start = raw.find('{')?;
-    let mut depth = 0usize;
-
-    for (offset, ch) in raw[start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let end = start + offset + ch.len_utf8();
-                    return Some(raw[start..end].to_owned());
-                }
-            }
-            _ => {}
+    // Try every `{` in the raw string as a candidate start: walk forward
+    // tracking brace depth (with awareness of JSON string literals so a `{`
+    // or `}` inside `"..."` doesn't throw the counter off) and return the
+    // first balanced object that parses as a `ReviewReport`. This is
+    // deliberately more permissive than a single-pass walk so prose with
+    // stray braces ahead of the real JSON can't drop the whole report.
+    let bytes = raw.as_bytes();
+    for (start, _) in raw.match_indices('{') {
+        if let Some(end) = balanced_object_end(&bytes[start..])
+            && let Some(slice) = raw.get(start..start + end)
+            && serde_json::from_str::<ReviewReport>(slice).is_ok()
+        {
+            return Some(slice.to_owned());
         }
     }
+    None
+}
 
+/// Find the byte offset, relative to `bytes`, just past the closing `}` of
+/// the first balanced JSON object, treating `"..."` (with `\\` and `\"`
+/// escapes) as opaque so braces inside string literals don't perturb the
+/// depth counter. Returns `None` if `bytes` doesn't start with `{` or never
+/// closes.
+fn balanced_object_end(bytes: &[u8]) -> Option<usize> {
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
     None
 }
 
@@ -272,6 +311,25 @@ mod tests {
         )
         .expect("plain json should parse");
         assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
+    fn parses_prose_prefixed_json_with_curly_placeholders_in_body() {
+        // Reproduces the CI failure: the agent prefixed its output with
+        // free-form prose, and a finding body contained string literals
+        // with `{}` and `{err}` formatting placeholders. The previous
+        // brace-counter walked into those without tracking string
+        // boundaries and never found a balanced close.
+        let raw = "I'll analyze this diff…\n\
+            Let me reason out loud first.\n\n\
+            {\"summary\":\"x\",\"findings\":[\
+            {\"severity\":\"low\",\"file\":\"src/learn.rs\",\"line\":89,\
+            \"title\":\"silent error\",\
+            \"body\":\"`eprintln!(\\\"  ⚠ skipping PR #{}: {err}\\\", pr.number);` — comment\"}\
+            ]}\n\nLet me know if you want me to elaborate.";
+        let report = parse_report(raw).expect("prose-prefixed JSON should parse");
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].title, "silent error");
     }
 
     #[test]

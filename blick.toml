@@ -18,3 +18,11 @@ prompt = """
 Focus on Rust correctness, async/await soundness, error handling, and
 public-API surface changes. Skip style nits since clippy and rustfmt cover those.
 """
+
+[learn]
+lookback_days = 7
+min_signal = 3
+team_reviewers = ["tuist/engineering"]
+labels = ["blick-learn"]
+base = "main"
+draft = true

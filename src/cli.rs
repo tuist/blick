@@ -35,6 +35,10 @@ pub enum Commands {
     /// Publish the latest run to GitHub: posts per-review check runs and a
     /// resolvable PR review. Auto-detects PR context from GitHub Actions.
     Publish(PublishArgs),
+    /// Inspect recent PR review activity and propose edits to the review
+    /// setup itself (skills, prompts, agent instructions). Maintains a
+    /// single rolling draft PR on `blick/learn`.
+    Learn(LearnArgs),
 }
 
 #[derive(Debug, Args)]
@@ -144,4 +148,28 @@ pub struct PublishArgs {
     /// Repository root on disk (defaults to current directory).
     #[arg(long)]
     pub repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct LearnArgs {
+    /// Repository root (defaults to current directory).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Print the agent's proposal without committing or opening a PR.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Open or update a PR even when fewer than `min_signal` blick threads
+    /// were observed in the lookback window.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Override `learn.lookback_days` for this run.
+    #[arg(long)]
+    pub lookback_days: Option<u32>,
+
+    /// Override `learn.min_signal` for this run.
+    #[arg(long)]
+    pub min_signal: Option<u32>,
 }
