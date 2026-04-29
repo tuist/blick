@@ -193,10 +193,16 @@ fn pick_root_scope<'a>(
 
 fn load_learn_config(repo_root: &Path) -> Result<LearnConfig, BlickError> {
     let path = repo_root.join("blick.toml");
-    if !path.exists() {
-        return Ok(LearnConfig::default());
-    }
-    let raw = fs::read_to_string(&path)?;
+    // Try to read the file directly and fall back to defaults on `NotFound`,
+    // saving a stat call vs the previous `exists() && read()` two-step. Any
+    // other I/O error (permissions, etc.) is still surfaced to the caller.
+    let raw = match fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LearnConfig::default());
+        }
+        Err(err) => return Err(BlickError::Io(err)),
+    };
     let parsed: crate::config::ConfigFile = toml::from_str(&raw)
         .map_err(|err| BlickError::Config(format!("failed to parse {}: {err}", path.display())))?;
     Ok(parsed.learn.unwrap_or_default())
@@ -219,16 +225,19 @@ fn detect_github_repo(repo_root: &Path) -> Result<String, BlickError> {
             ".nameWithOwner",
         ])
         .output()
-        .map_err(|err| BlickError::Api(format!("failed to run gh: {err}")))?;
+        .map_err(|err| BlickError::Config(format!("failed to run gh: {err}")))?;
     if !output.status.success() {
-        return Err(BlickError::Api(format!(
+        // Failure here is a setup problem (no gh, no remote, wrong cwd) —
+        // not an upstream API error — so route it through `Config` for
+        // consistency with the rest of the configuration-resolution path.
+        return Err(BlickError::Config(format!(
             "gh repo view failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     let slug = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if slug.is_empty() {
-        return Err(BlickError::Api(
+        return Err(BlickError::Config(
             "gh repo view returned empty owner/repo".to_owned(),
         ));
     }
@@ -364,6 +373,7 @@ query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
           path
           line
           comments(first: 20) {
+            pageInfo { hasNextPage }
             nodes { url body author { login __typename } }
           }
         }
@@ -419,6 +429,16 @@ query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
                     .unwrap_or_default();
                 if comment_nodes.is_empty() {
                     continue;
+                }
+                if node
+                    .pointer("/comments/pageInfo/hasNextPage")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    eprintln!(
+                        "  ⚠ PR #{pr} thread has more than {} comments; truncating (later replies are not in the agent's input)",
+                        comment_nodes.len()
+                    );
                 }
                 let mut comments: Vec<ThreadComment> = Vec::with_capacity(comment_nodes.len());
                 for c in &comment_nodes {
@@ -785,11 +805,15 @@ fn validate_edits(edits: &[ProposedEdit]) -> Result<(), BlickError> {
 }
 
 /// Reject anything other than a relative path containing only `Normal`
-/// components. This catches absolute paths (`/etc/passwd`), Windows-drive
-/// roots (`C:\foo`), parent traversal (`../foo`), bare `.` segments, and
-/// embedded NUL bytes — all of which a substring `..` check would let
-/// through. Any failure here means the agent's proposal is dropped before
-/// we touch the filesystem.
+/// components, expressed in git-canonical form (forward slashes only).
+///
+/// Catches absolute paths (`/etc/passwd`), Windows-drive roots (`C:\foo`),
+/// parent traversal (`../foo`), bare `.` segments, embedded NUL bytes, and
+/// backslash separators — the last one is critical because the allowlist
+/// is matched on string prefixes with `/` and `Path::components()` on
+/// Windows happily splits `\` segments, so without this rejection a value
+/// like `.blick\skills\..\..\secret` could slip past the allowlist on
+/// Windows even though it would be rejected here.
 fn validate_edit_path(raw: &str) -> Result<(), BlickError> {
     if raw.is_empty() {
         return Err(BlickError::Config("edit path is empty".to_owned()));
@@ -797,6 +821,11 @@ fn validate_edit_path(raw: &str) -> Result<(), BlickError> {
     if raw.as_bytes().contains(&0) {
         return Err(BlickError::Config(format!(
             "edit path contains a NUL byte: {raw:?}"
+        )));
+    }
+    if raw.contains('\\') {
+        return Err(BlickError::Config(format!(
+            "edit path must use `/` separators, not `\\`: {raw}"
         )));
     }
 
@@ -829,6 +858,13 @@ fn validate_edit_path(raw: &str) -> Result<(), BlickError> {
     Ok(())
 }
 
+/// Match `path` against the static [`EDIT_ALLOWLIST`].
+///
+/// Callers MUST run [`validate_edit_path`] first; we rely on that step to
+/// reject `\` separators, traversal segments, and absolute paths. Given
+/// those preconditions, plain string matching against `/`-terminated
+/// prefixes is sufficient — and refusing to do it any other way means the
+/// allowlist contract stays trivial to read.
 fn path_in_allowlist(path: &str) -> bool {
     EDIT_ALLOWLIST.iter().any(|allowed| {
         if allowed.ends_with('/') {
@@ -939,9 +975,50 @@ fn ensure_branch_owned(repo_root: &Path, branch: &str, base: &str) -> Result<(),
     Ok(())
 }
 
+/// Write each proposed edit to disk, refusing any path whose effective
+/// destination escapes `repo_root` via a symlink.
+///
+/// `validate_edit_path` already rejects `..` and absolute paths in the raw
+/// string, but a hostile or accidental layout where (e.g.) `.blick/skills`
+/// is a symlink pointing at `/home/runner/.ssh/` would let `fs::write`
+/// follow that link and clobber files outside the repo. We canonicalize
+/// the deepest existing ancestor of the target and require that it stays
+/// inside `repo_root.canonicalize()` before writing.
 fn write_proposal_files(repo_root: &Path, edits: &[ProposedEdit]) -> Result<(), BlickError> {
+    let canonical_root = repo_root
+        .canonicalize()
+        .map_err(|err| BlickError::Io(err))?;
+
     for edit in edits {
         let target = repo_root.join(&edit.path);
+
+        // Walk up from `target` to find the closest ancestor that already
+        // exists on disk; canonicalize that and require it to descend from
+        // `canonical_root`. This catches a symlinked intermediate
+        // directory regardless of whether the leaf file exists yet.
+        let mut probe = target.as_path();
+        let anchor = loop {
+            if probe.exists() {
+                break probe.canonicalize().map_err(|err| BlickError::Io(err))?;
+            }
+            match probe.parent() {
+                Some(parent) => probe = parent,
+                None => {
+                    return Err(BlickError::Config(format!(
+                        "edit target has no existing ancestor: {}",
+                        target.display()
+                    )));
+                }
+            }
+        };
+        if !anchor.starts_with(&canonical_root) {
+            return Err(BlickError::Config(format!(
+                "edit target escapes the repository via a symlink: {} → {}",
+                target.display(),
+                anchor.display()
+            )));
+        }
+
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -1317,6 +1394,63 @@ mod tests {
             contents: "# foo\n".into(),
         }];
         assert!(validate_edits(&ok).is_ok());
+    }
+
+    #[test]
+    fn validate_edit_path_rejects_backslash_separators() {
+        // Windows-style separators are rejected outright so `..\..` style
+        // traversal can't sneak past `path_in_allowlist`'s `/`-anchored
+        // string match on platforms where `Path::components()` recognises
+        // `\`. This matches blick's git-canonical edit path contract.
+        assert!(validate_edit_path(".blick\\skills\\foo\\SKILL.md").is_err());
+        assert!(validate_edit_path(".blick/skills\\..\\..\\secret").is_err());
+    }
+
+    #[test]
+    fn write_proposal_files_rejects_symlinked_directories_outside_repo() {
+        use std::os::unix::fs::symlink;
+
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        // `<repo>/.blick/skills` is a symlink pointing into another
+        // tempdir. The agent's edit path `.blick/skills/foo/SKILL.md` is
+        // in the allowlist, but writing through the symlink would land
+        // outside the repository. The hardened writer must refuse.
+        std::fs::create_dir_all(repo.path().join(".blick")).unwrap();
+        symlink(outside.path(), repo.path().join(".blick/skills")).unwrap();
+
+        let edits = vec![ProposedEdit {
+            path: ".blick/skills/foo/SKILL.md".into(),
+            contents: "# foo\n".into(),
+        }];
+        let err =
+            write_proposal_files(repo.path(), &edits).expect_err("symlink escape must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("escapes the repository"),
+            "expected escape error, got: {msg}"
+        );
+
+        // The escape was caught before any write, so nothing landed in
+        // the outside dir.
+        assert!(
+            !outside.path().join("foo/SKILL.md").exists(),
+            "symlinked write should not have produced a file"
+        );
+    }
+
+    #[test]
+    fn write_proposal_files_writes_into_a_clean_repo_layout() {
+        let repo = tempfile::tempdir().unwrap();
+        let edits = vec![ProposedEdit {
+            path: ".blick/skills/foo/SKILL.md".into(),
+            contents: "# foo\n".into(),
+        }];
+        write_proposal_files(repo.path(), &edits).expect("clean write should succeed");
+        let written =
+            std::fs::read_to_string(repo.path().join(".blick/skills/foo/SKILL.md")).unwrap();
+        assert_eq!(written, "# foo\n");
     }
 
     #[test]
