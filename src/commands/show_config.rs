@@ -7,6 +7,12 @@ use crate::cli::ConfigArgs;
 use crate::error::BlickError;
 use crate::scope::load_scopes;
 
+/// Synchronous on purpose: this command does a one-shot directory walk
+/// (`load_scopes`) and prints to stdout, with no other concurrent work in
+/// flight. The async runtime in `app::run` exists for `review` and `learn`
+/// which spawn agent invocations; for a single-task command like this,
+/// wrapping the blocking I/O in `spawn_blocking` would be ceremony with no
+/// upside. If `blick config` ever grows concurrent work, revisit.
 pub fn run(args: ConfigArgs) -> Result<(), BlickError> {
     let repo_root = args
         .repo

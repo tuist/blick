@@ -53,11 +53,14 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
     } else {
         resolve_incremental_base(&repo_root, &configured_base)
     };
+    // The `scopes.is_empty()` guard above means `.max()` always yields a
+    // value; the canonical default lives in `EffectiveDefaults::default()`
+    // and is propagated through every scope by `scope::inherit::build_scope`.
     let max_diff = scopes
         .iter()
         .map(|s| s.defaults.max_diff_bytes)
         .max()
-        .unwrap_or(120_000);
+        .expect("scopes is non-empty (checked above)");
     let diff = collect_diff_in(&repo_root, &base, max_diff)?;
 
     if diff.diff.is_empty() {

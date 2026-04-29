@@ -2,8 +2,8 @@
 //! [`crate::app`] dispatches to them based on the parsed CLI.
 
 pub mod init;
-pub mod learn_cmd;
-pub mod publish_cmd;
-pub mod render_cmd;
+pub mod learn;
+pub mod publish;
+pub mod render;
 pub mod review;
 pub mod show_config;
