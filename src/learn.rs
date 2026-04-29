@@ -46,9 +46,10 @@ pub struct LearnArgs {
 }
 
 pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
+    // `args` is owned, so we can move `args.repo` directly instead of
+    // cloning it before defaulting to `.`.
     let repo_root = args
         .repo
-        .clone()
         .unwrap_or_else(|| PathBuf::from("."))
         .canonicalize()?;
 
@@ -69,7 +70,7 @@ pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
     );
 
     let cutoff = chrono::Utc::now() - chrono::Duration::days(learn_cfg.lookback_days as i64);
-    let prs = fetch_recent_merged_prs(&gh_repo, cutoff)?;
+    let prs = fetch_recent_merged_prs(&gh_repo, cutoff).await?;
     eprintln!(
         "  found {} merged PR{} since {}",
         prs.len(),
@@ -141,7 +142,9 @@ pub async fn learn(args: LearnArgs) -> Result<(), BlickError> {
         for edit in &proposal.edits {
             eprintln!("  • {} ({} bytes)", edit.path, edit.contents.len());
         }
-        println!("{}", serde_json::to_string_pretty(&proposal).unwrap());
+        let rendered = serde_json::to_string_pretty(&proposal)
+            .map_err(|err| BlickError::Api(format!("failed to serialize learn proposal: {err}")))?;
+        println!("{rendered}");
         return Ok(());
     }
 
@@ -225,7 +228,7 @@ struct PrSummary {
 /// on this page are older" optimization can stop too early. The search API
 /// filters server-side by merge date so we can paginate without that
 /// heuristic.
-fn fetch_recent_merged_prs(
+async fn fetch_recent_merged_prs(
     gh_repo: &str,
     cutoff: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<PrSummary>, BlickError> {
@@ -238,7 +241,7 @@ fn fetch_recent_merged_prs(
             "search/issues?q={}&per_page=100&page={page}",
             percent_encode_query(&query),
         );
-        let raw = gh_api_get_with_retry(&path)?;
+        let raw = gh_api_get_with_retry(&path).await?;
         let response: Value = serde_json::from_str(&raw)
             .map_err(|err| BlickError::Api(format!("failed to parse search response: {err}")))?;
         let items = response
@@ -267,13 +270,20 @@ fn fetch_recent_merged_prs(
 /// pass through untouched; everything else (including spaces and `:`) is
 /// `%XX`-encoded so `gh api` doesn't have to interpret it.
 fn percent_encode_query(input: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(input.len());
     for byte in input.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char)
             }
-            _ => out.push_str(&format!("%{:02X}", byte)),
+            // `write!` against a `String` is infallible — the `_ =` is a
+            // visible nudge that we're intentionally not propagating an
+            // error here. Avoids the per-byte `format!` allocation that an
+            // earlier version of this function did for every escaped char.
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
         }
     }
     out
@@ -608,6 +618,11 @@ What to look for:
 - Recurring themes in human_authored threads that Blick is missing entirely — propose a new local skill under .blick/skills/<name>/SKILL.md and reference it from a review in blick.toml.
 - Disagreements voiced in replies — a clear "no, X is fine because Y" from a human is strong evidence to weaken or scope down the rule that triggered it.
 
+Skill design constraints (very important):
+- Any new or edited skill must be GENERIC and reusable across PRs, not a fix for one specific incident. If you can't articulate the rule without naming a particular file, function, or PR, the pattern is not yet generalizable — drop it instead of encoding a one-off.
+- New skills must be COHESIVE with the existing setup. Read the snapshot of the current skills and review prompts before proposing anything. Prefer extending an existing skill over adding a new one; only create a new skill when the topic is genuinely orthogonal to what's already there. Match the tone, structure, and granularity of the skills already in place.
+- A theme needs at least two independent supporting threads (across different PRs) before it justifies a skill change. One-off feedback is not a pattern.
+
 What NOT to do:
 - Do not propose edits to source code, tests, CI, or anything outside the allowlist.
 - Do not propose speculative edits without clear thread evidence — if a theme has fewer than two supporting threads, drop it.
@@ -703,19 +718,53 @@ fn extract_json_block(raw: &str) -> Option<String> {
 
 fn validate_edits(edits: &[ProposedEdit]) -> Result<(), BlickError> {
     for edit in edits {
-        if !path_in_allowlist(&edit.path) {
-            return Err(BlickError::Config(format!(
-                "agent proposed edit outside the allowlist: {}",
-                edit.path
-            )));
-        }
-        if edit.path.contains("..") {
-            return Err(BlickError::Config(format!(
-                "edit path contains traversal: {}",
-                edit.path
-            )));
+        validate_edit_path(&edit.path)?;
+    }
+    Ok(())
+}
+
+/// Reject anything other than a relative path containing only `Normal`
+/// components. This catches absolute paths (`/etc/passwd`), Windows-drive
+/// roots (`C:\foo`), parent traversal (`../foo`), bare `.` segments, and
+/// embedded NUL bytes — all of which a substring `..` check would let
+/// through. Any failure here means the agent's proposal is dropped before
+/// we touch the filesystem.
+fn validate_edit_path(raw: &str) -> Result<(), BlickError> {
+    if raw.is_empty() {
+        return Err(BlickError::Config("edit path is empty".to_owned()));
+    }
+    if raw.as_bytes().contains(&0) {
+        return Err(BlickError::Config(format!(
+            "edit path contains a NUL byte: {raw:?}"
+        )));
+    }
+
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        return Err(BlickError::Config(format!(
+            "edit path must be relative: {raw}"
+        )));
+    }
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(BlickError::Config(format!(
+                    "edit path has a disallowed component ({component:?}): {raw}"
+                )));
+            }
         }
     }
+
+    if !path_in_allowlist(raw) {
+        return Err(BlickError::Config(format!(
+            "agent proposed edit outside the allowlist: {raw}"
+        )));
+    }
+
     Ok(())
 }
 
@@ -1024,7 +1073,7 @@ fn git_check(repo_root: &Path, args: &[&str]) -> bool {
 /// ones with secondary rate limits this code path realistically hits, so
 /// retry is scoped to the explicit callers rather than smeared across every
 /// `gh_api` invocation.
-fn gh_api_get_with_retry(api_path: &str) -> Result<String, BlickError> {
+async fn gh_api_get_with_retry(api_path: &str) -> Result<String, BlickError> {
     match gh_api_get(api_path) {
         Ok(value) => Ok(value),
         Err(err) => {
@@ -1037,7 +1086,10 @@ fn gh_api_get_with_retry(api_path: &str) -> Result<String, BlickError> {
                 return Err(err);
             }
             eprintln!("  ⚠ gh api hit a transient limit; retrying once after 5s ({err})");
-            std::thread::sleep(std::time::Duration::from_secs(5));
+            // tokio sleep so we don't block the executor — this function
+            // runs from inside an async task on the same runtime as the
+            // agent invocation.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             gh_api_get(api_path)
         }
     }
@@ -1192,6 +1244,28 @@ mod tests {
             contents: "# foo\n".into(),
         }];
         assert!(validate_edits(&ok).is_ok());
+    }
+
+    #[test]
+    fn validate_edit_path_rejects_absolute_and_special_components() {
+        // Absolute path → rejected even though the suffix would be in the
+        // allowlist if it were relative.
+        assert!(validate_edit_path("/etc/passwd").is_err());
+        // Parent-traversal segments are rejected ahead of the allowlist
+        // check so they can't smuggle a path out of `.blick/skills/` past
+        // `path_in_allowlist`.
+        assert!(validate_edit_path(".blick/skills/foo/../../bar").is_err());
+        // Leading `./` produces a `CurDir` component, which we reject so
+        // the path stays in a canonical form.
+        assert!(validate_edit_path("./blick.toml").is_err());
+        // Empty path and NUL bytes are not file paths.
+        assert!(validate_edit_path("").is_err());
+        assert!(validate_edit_path(".blick/skills/foo/SKILL.md\0evil").is_err());
+        // Sanity check that a clean relative path still passes. Mid-path
+        // `./` is normalized away by `Path::components()` and is fine.
+        assert!(validate_edit_path(".blick/skills/foo/SKILL.md").is_ok());
+        assert!(validate_edit_path(".blick/skills/./foo/SKILL.md").is_ok());
+        assert!(validate_edit_path("blick.toml").is_ok());
     }
 
     #[test]
