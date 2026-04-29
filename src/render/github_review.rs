@@ -32,27 +32,10 @@ pub(super) fn render_github_review(
     let mut comments: Vec<Value> = Vec::new();
     let mut out_of_diff: Vec<&Finding> = Vec::new();
     let total_findings = count_findings(records);
-    let mut summary_lines: Vec<String> = Vec::new();
 
     for record in records {
         let origin = origin_label(&record.scope_label, &record.review_name);
         let index = DiffLineIndex::from_unified(&record.diff);
-
-        // Only mention reviews that actually contributed findings; otherwise
-        // the body just repeats the "No findings" header.
-        if !record.report.findings.is_empty() {
-            summary_lines.push(format!(
-                "**{} review** - {} ({} finding{})",
-                origin,
-                record.report.summary,
-                record.report.findings.len(),
-                if record.report.findings.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ));
-        }
 
         for finding in &record.report.findings {
             let body = format!(
@@ -78,7 +61,7 @@ pub(super) fn render_github_review(
         }
     }
 
-    let mut body = build_review_body(records, total_findings, &summary_lines, &out_of_diff);
+    let mut body = build_review_body(records, total_findings, &out_of_diff);
     body.push_str("\n\n");
     body.push_str(LAST_REVIEWED_MARKER_PREFIX);
     body.push_str(commit_sha);
@@ -114,7 +97,6 @@ fn pick_review_event(records: &[TaskRecord], total_findings: usize) -> &'static 
 fn build_review_body(
     records: &[TaskRecord],
     total_findings: usize,
-    summary_lines: &[String],
     out_of_diff: &[&Finding],
 ) -> String {
     let header = if total_findings == 0 {
@@ -130,10 +112,6 @@ fn build_review_body(
     };
 
     let mut body = header;
-    if !summary_lines.is_empty() {
-        body.push_str("\n\n");
-        body.push_str(&summary_lines.join("\n"));
-    }
 
     if !out_of_diff.is_empty() {
         body.push_str("\n\n#### Findings outside this PR's diff\n");
