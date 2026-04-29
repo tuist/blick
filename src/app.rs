@@ -186,6 +186,19 @@ async fn review(args: ReviewArgs) -> Result<(), BlickError> {
     }
 
     if tasks.is_empty() {
+        // Still write an (empty) manifest so `blick publish` can tell the
+        // difference between "review ran and matched nothing" and "review
+        // crashed before writing anything". Without this, publish posts a
+        // misleading "Blick review didn't run" notice whenever a diff doesn't
+        // touch any configured scope.
+        let manifest = RunManifest {
+            run_id: run_id.clone(),
+            base: base.clone(),
+            tasks: Vec::new(),
+        };
+        let _ = write_manifest(&logs_dir.join("manifest.json"), &manifest);
+        update_latest_pointer(&runs_root, &run_id);
+
         let report = ReviewReport::empty(format!(
             "No matching reviews found{}.",
             args.name
