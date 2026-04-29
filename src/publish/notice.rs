@@ -58,10 +58,8 @@ mod tests {
 
     #[test]
     fn includes_workflow_run_link_when_provided() {
-        let body = build_review_failed_notice(
-            &ctx(),
-            Some("https://github.com/o/r/actions/runs/123"),
-        );
+        let body =
+            build_review_failed_notice(&ctx(), Some("https://github.com/o/r/actions/runs/123"));
         assert!(body.contains("https://github.com/o/r/actions/runs/123"));
         assert!(body.contains("See the workflow run for details"));
     }

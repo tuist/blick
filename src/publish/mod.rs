@@ -105,9 +105,7 @@ fn post_pr_review(ctx: &PublishContext, run_dir: &Path) -> Result<(), BlickError
     // post so the user still gets the per-review status.
     match render::total_findings(run_dir) {
         Ok(0) => {
-            eprintln!(
-                "ℹ no findings; skipping PR review post (check runs convey the pass status)"
-            );
+            eprintln!("ℹ no findings; skipping PR review post (check runs convey the pass status)");
             Ok(())
         }
         Ok(_) => post_review_with_inline_fallback(ctx, run_dir, pr),

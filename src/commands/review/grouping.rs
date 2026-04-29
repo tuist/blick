@@ -61,11 +61,7 @@ fn slice_diff_by_files(diff: &str, files: &[String]) -> String {
             out.push_str(line);
         }
     }
-    if out.is_empty() {
-        diff.to_owned()
-    } else {
-        out
-    }
+    if out.is_empty() { diff.to_owned() } else { out }
 }
 
 #[cfg(test)]

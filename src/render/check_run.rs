@@ -6,10 +6,10 @@ use crate::config::Severity;
 use crate::error::BlickError;
 use crate::run_record::TaskRecord;
 
+use super::RenderContext;
 use super::badges::severity_to_annotation_level;
 use super::diff_lines::DiffLineIndex;
 use super::origin::origin_label;
-use super::RenderContext;
 
 pub(super) fn render_check_runs(
     records: &[TaskRecord],
@@ -110,7 +110,7 @@ mod tests {
                    -    println!(\"hello\");\n\
                    +    println!(\"hello, blick\");\n\
                     }\n"
-                .into(),
+            .into(),
             report: ReviewReport {
                 summary: "summary".into(),
                 findings,

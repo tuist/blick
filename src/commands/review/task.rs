@@ -145,10 +145,7 @@ mod tests {
 
     #[test]
     fn log_stem_replaces_slashes_in_scope_label() {
-        assert_eq!(
-            task_log_stem("apps/web", "security"),
-            "apps_web--security"
-        );
+        assert_eq!(task_log_stem("apps/web", "security"), "apps_web--security");
     }
 
     #[test]

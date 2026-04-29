@@ -174,7 +174,7 @@ mod tests {
                    -    println!(\"hello\");\n\
                    +    println!(\"hello, blick\");\n\
                     }\n"
-                .into(),
+            .into(),
             report: ReviewReport {
                 summary: "One issue".into(),
                 findings,

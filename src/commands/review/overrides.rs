@@ -101,10 +101,7 @@ mod tests {
         let mut s = scope();
         apply_to_one(&mut s, Some(AgentKind::Codex), None);
         assert_eq!(s.agent.kind, AgentKind::Codex);
-        assert_eq!(
-            s.agent.model.as_deref(),
-            AgentKind::Codex.default_model()
-        );
+        assert_eq!(s.agent.model.as_deref(), AgentKind::Codex.default_model());
         // `binary` and `args` are preserved when only the kind changes.
         assert_eq!(s.agent.binary.as_deref(), Some("/custom/claude"));
         assert_eq!(s.agent.args, vec!["--flag".to_owned()]);

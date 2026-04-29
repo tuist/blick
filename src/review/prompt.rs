@@ -147,8 +147,7 @@ mod tests {
 
     #[test]
     fn system_prompt_inlines_skill_bodies_with_separators() {
-        let prompt =
-            build_system_prompt(&[loaded("security", "look for unsafe blocks")], None);
+        let prompt = build_system_prompt(&[loaded("security", "look for unsafe blocks")], None);
         assert!(prompt.contains("--- skill: security ---"));
         assert!(prompt.contains("look for unsafe blocks"));
     }

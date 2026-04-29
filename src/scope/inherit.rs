@@ -100,11 +100,7 @@ fn merge_agent(
     }
 }
 
-fn merge_skills(
-    dir: &Path,
-    file: &ConfigFile,
-    skills: &mut BTreeMap<String, ResolvedSkillEntry>,
-) {
+fn merge_skills(dir: &Path, file: &ConfigFile, skills: &mut BTreeMap<String, ResolvedSkillEntry>) {
     // Auto-discovered local skills come first so an explicit [[skills]]
     // entry of the same name in the same scope overrides them.
     for entry in discover_local_skills(dir) {

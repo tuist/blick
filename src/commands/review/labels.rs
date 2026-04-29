@@ -29,9 +29,7 @@ pub(super) fn scope_label_for(scope_root: &Path, repo_root: &Path) -> String {
 /// Roll a per-task list of `(scope_root, review_name, report)` tuples into
 /// a single [`ReviewReport`], prefixing each finding's title with the
 /// `[scope/review]` origin. Single-task runs pass straight through unchanged.
-pub(super) fn combine_reports(
-    reports: Vec<(PathBuf, String, ReviewReport)>,
-) -> ReviewReport {
+pub(super) fn combine_reports(reports: Vec<(PathBuf, String, ReviewReport)>) -> ReviewReport {
     if reports.len() == 1 {
         return reports.into_iter().next().unwrap().2;
     }
