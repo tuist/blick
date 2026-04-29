@@ -84,8 +84,10 @@ pub(super) async fn execute_task(
     })
 }
 
-/// Convert a `(scope_label, review_name)` pair to a filesystem-safe stem
-/// for log / prompt files (`scope/with/slashes` → `scope_with_slashes`).
+/// Build a filesystem-safe stem for a task's log + prompt files by joining
+/// the scope label and review name with `--` and replacing `/` in the
+/// scope label with `_` (e.g. `("apps/web", "security")` →
+/// `apps_web--security`).
 fn task_log_stem(scope_label: &str, review_name: &str) -> String {
     format!("{}--{}", scope_label.replace('/', "_"), review_name)
 }
