@@ -11,7 +11,7 @@ Describe 'blick review'
     The output should include '"summary": "One issue found."'
     The output should include '"file": "src/main.rs"'
     The output should include 'notes.txt'
-    The output should include 'Unified diff:'
+    The output should include 'Full PR diff (context):'
   End
 
   It 'attaches skill content and review prompt to the agent invocation'

@@ -4,11 +4,13 @@
 //!
 //! Submodules:
 //! - [`context`] resolves repo / head SHA / PR from CLI args + env
+//! - [`dedupe`]  drops findings that were already posted on a prior review
 //! - [`gh`]      shells out to the `gh` CLI for API calls
 //! - [`notice`]  builds the "didn't run" notice body
 //! - [`payload`] massages review payloads when GitHub rejects parts of them
 
 mod context;
+mod dedupe;
 mod gh;
 mod notice;
 mod payload;
@@ -16,9 +18,11 @@ mod payload;
 use std::path::Path;
 
 use crate::error::BlickError;
+use crate::github::fetch_blick_inline_comments;
 use crate::render::{self, Format, RenderContext};
 
 use self::context::{PublishContext, resolve_context, workflow_run_url};
+use self::dedupe::{DedupeOutcome, dedupe_review_payload};
 use self::gh::gh_api_post;
 use self::notice::build_review_failed_notice;
 use self::payload::strip_inline_comments;
@@ -129,6 +133,22 @@ fn post_review_with_inline_fallback(
     };
     let review = render::render(run_dir, Format::GithubReview, render_ctx)?;
     let endpoint = format!("repos/{}/pulls/{pr}/reviews", ctx.repo);
+    let prior = match fetch_blick_inline_comments(&ctx.repo, pr) {
+        Ok(prior) => prior,
+        Err(err) => {
+            eprintln!("ℹ could not fetch prior inline comments ({err}); posting without dedupe");
+            Vec::new()
+        }
+    };
+    let review = match dedupe_review_payload(&review, &prior)? {
+        DedupeOutcome::Skip => {
+            eprintln!(
+                "ℹ every finding was already posted on a prior blick review; skipping PR review post"
+            );
+            return Ok(());
+        }
+        DedupeOutcome::Post(payload) => payload,
+    };
     match gh_api_post(&endpoint, &review) {
         Ok(()) => {
             eprintln!("✓ posted PR review on #{pr}");
