@@ -79,13 +79,14 @@ rust_test(
     lint_config = ":blick_lints",
     rustc_env = {"CARGO_PKG_VERSION": "0.1.0"},
     aliases = aliases(
+        normal = True,
         normal_dev = True,
+        proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":blick_lib"] + all_crate_deps(
-        normal_dev = True,
-    ),
+    deps = [":blick_lib"] + all_crate_deps(normal = True, normal_dev = True),
     proc_macro_deps = all_crate_deps(
+        proc_macro = True,
         proc_macro_dev = True,
     ),
 )
