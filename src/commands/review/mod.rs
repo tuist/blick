@@ -207,7 +207,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
             .collect(),
     };
     let _ = write_manifest(&logs_dir.join("manifest.json"), &manifest);
-    update_latest_pointer(&runs_root, &run_id);
+    update_latest_pointer(&runs_root, &run_id)?;
 
     let combined = combine_reports(
         &repo_root,
@@ -236,6 +236,6 @@ fn persist_empty_run(
         tasks: Vec::new(),
     };
     write_manifest(&logs_dir.join("manifest.json"), &manifest)?;
-    update_latest_pointer(runs_root, run_id);
+    update_latest_pointer(runs_root, run_id)?;
     Ok(())
 }
