@@ -9,7 +9,7 @@ mod run_dir;
 mod task;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -73,7 +73,12 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
         None => None,
     };
 
+    let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let runs_root = repo_root.join(".blick").join("runs");
+    let logs_dir = runs_root.join(&run_id);
+
     if diff.diff.is_empty() {
+        persist_empty_run(&logs_dir, &runs_root, &run_id, &base)?;
         let report = ReviewReport::empty(format!("No tracked changes found relative to {base}."));
         println!("{}", render_report(&report, args.json)?);
         return Ok(());
@@ -81,6 +86,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
 
     let owners = group_changes_by_scope(&repo_root, &scopes, &diff);
     if owners.is_empty() {
+        persist_empty_run(&logs_dir, &runs_root, &run_id, &base)?;
         let report = ReviewReport::empty(format!(
             "No changed files map to a known blick.toml scope (base {base})."
         ));
@@ -94,9 +100,6 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
         .unwrap_or(4)
         .max(1);
 
-    let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let runs_root = repo_root.join(".blick").join("runs");
-    let logs_dir = runs_root.join(&run_id);
     fs::create_dir_all(&logs_dir)?;
 
     let mut tasks: Vec<TaskInput> = Vec::new();
@@ -146,19 +149,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
     }
 
     if tasks.is_empty() {
-        // Still write an (empty) manifest so `blick publish` can tell the
-        // difference between "review ran and matched nothing" and "review
-        // crashed before writing anything". Without this, publish posts a
-        // misleading "Blick review didn't run" notice whenever a diff doesn't
-        // touch any configured scope.
-        let manifest = RunManifest {
-            run_id: run_id.clone(),
-            base: base.clone(),
-            tasks: Vec::new(),
-        };
-        let _ = write_manifest(&logs_dir.join("manifest.json"), &manifest);
-        update_latest_pointer(&runs_root, &run_id);
-
+        persist_empty_run(&logs_dir, &runs_root, &run_id, &base)?;
         let report = ReviewReport::empty(format!(
             "No matching reviews found{}.",
             args.name
@@ -216,7 +207,7 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
             .collect(),
     };
     let _ = write_manifest(&logs_dir.join("manifest.json"), &manifest);
-    update_latest_pointer(&runs_root, &run_id);
+    update_latest_pointer(&runs_root, &run_id)?;
 
     let combined = combine_reports(
         &repo_root,
@@ -226,5 +217,25 @@ pub async fn run(args: ReviewArgs) -> Result<(), BlickError> {
             .collect(),
     );
     println!("{}", render_report(&combined, args.json)?);
+    Ok(())
+}
+
+fn persist_empty_run(
+    logs_dir: &Path,
+    runs_root: &Path,
+    run_id: &str,
+    base: &str,
+) -> Result<(), BlickError> {
+    fs::create_dir_all(logs_dir)?;
+    // Write an empty manifest so `blick publish` can distinguish "review ran
+    // but there was nothing to post" from "review crashed before writing
+    // anything" across every early-return path.
+    let manifest = RunManifest {
+        run_id: run_id.to_owned(),
+        base: base.to_owned(),
+        tasks: Vec::new(),
+    };
+    write_manifest(&logs_dir.join("manifest.json"), &manifest)?;
+    update_latest_pointer(runs_root, run_id)?;
     Ok(())
 }

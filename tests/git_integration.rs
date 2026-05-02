@@ -2,7 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use blick::cli::ReviewArgs;
+use blick::commands::review;
+use blick::config::{AgentKind, ConfigFile};
 use blick::git::collect_diff_in;
+use blick::run_record::{read_manifest, resolve_run_dir};
 use tempfile::TempDir;
 
 struct TestRepo {
@@ -127,4 +131,35 @@ fn truncates_large_diffs() {
 
     assert!(diff.truncated);
     assert!(diff.diff.contains("[diff truncated by blick]"));
+}
+
+#[tokio::test]
+async fn review_writes_an_empty_manifest_when_the_diff_is_empty() {
+    let repo = TestRepo::new();
+    let config = ConfigFile::starter(AgentKind::Codex, None)
+        .to_toml()
+        .expect("starter config should serialize");
+    repo.write("blick.toml", &config);
+    repo.commit_all("initial commit");
+
+    review::run(ReviewArgs {
+        name: None,
+        agent: None,
+        model: None,
+        base: Some("HEAD".to_owned()),
+        json: true,
+        stream: false,
+        max_concurrency: None,
+        repo: Some(repo.path().to_path_buf()),
+    })
+    .await
+    .expect("review should succeed when there is no diff");
+
+    let run_dir =
+        resolve_run_dir(repo.path(), None).expect("latest run should resolve after review");
+    let manifest =
+        read_manifest(&run_dir.join("manifest.json")).expect("empty run manifest should exist");
+
+    assert_eq!(manifest.base, "HEAD");
+    assert!(manifest.tasks.is_empty());
 }
