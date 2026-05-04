@@ -17,6 +17,14 @@ skills = ["rust-best-practices"]
 prompt = """
 Focus on Rust correctness, async/await soundness, error handling, and
 public-API surface changes. Skip style nits since clippy and rustfmt cover those.
+
+When reviewing for code duplication or inconsistency:
+- Do NOT flag functions as "duplicated" or "inconsistent" solely because they share
+  implementation patterns (e.g., both strip path prefixes and fallback differently)
+- Functions MAY intentionally have different fallback behaviors for different use cases
+  (e.g., debug/display output vs filesystem-safe labels vs user-facing messages)
+- Only flag duplication when the functions have IDENTICAL semantic purposes and could
+  genuinely share an implementation without losing intentional behavioral differences
 """
 
 [learn]
