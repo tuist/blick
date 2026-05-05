@@ -7,9 +7,11 @@
 //! - [`github_summary`] — plain-markdown rollup
 //!
 //! Cross-cutting helpers live in [`badges`] (severity → visual indicator),
-//! [`details`] (`<details>` block helpers), [`markers`] (last-reviewed SHA
-//! markers embedded in review bodies), [`origin`] (origin labels), and
-//! [`diff_lines`] (PR-diff line index for filtering inline comments).
+//! [`details`] (`<details>` block helpers), [`markers`] (legacy
+//! last-reviewed SHA marker parser, kept for back-compat with PRs that
+//! had blick reviews before the marker moved to check runs), [`origin`]
+//! (origin labels), and [`diff_lines`] (PR-diff line index for filtering
+//! inline comments).
 
 pub mod diff_lines;
 
@@ -28,9 +30,7 @@ use clap::ValueEnum;
 use crate::error::BlickError;
 use crate::run_record::{TaskRecord, list_task_records};
 
-pub use markers::{
-    LAST_REVIEWED_MARKER_PREFIX, LAST_REVIEWED_MARKER_SUFFIX, parse_last_reviewed_marker,
-};
+pub use markers::parse_last_reviewed_marker;
 
 /// Output format for a rendered run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

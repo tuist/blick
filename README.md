@@ -297,7 +297,7 @@ blick render --format=github-review --head-sha=$SHA
 blick render --format=check-run --head-sha=$SHA
 ```
 
-Findings whose `(file, line)` is **outside** the PR's diff hunks (the agent commented on context it read) are surfaced in the review body or check-run summary instead of as inline comments. The GitHub API rejects out-of-diff comments; this filter keeps the API call safe.
+Findings whose `(file, line)` is **outside** the PR's diff hunks (the agent commented on context it read) are surfaced in the per-`(scope, review)` check-run summary instead of as inline comments. The GitHub API rejects out-of-diff comments; this filter keeps the API call safe.
 
 `--run` selects which run to render (defaults to `latest`). `--head-sha` is required for `github-review` and `check-run` (in CI, pass the PR head commit).
 
@@ -322,7 +322,7 @@ Required permissions on the workflow: `checks: write`, `pull-requests: write`.
 
 `blick publish` shells out to `gh api`, so the runner needs `gh` on PATH (it's pre-installed on GitHub-hosted runners). For non-Actions environments, pass `--head-sha`, `--gh-repo`, and `--pr` explicitly.
 
-The PR author can mark each individual line comment as resolved as they fix it. That's standard GitHub PR review behavior, and works because we post through the reviews API rather than as plain issue comments or check annotations. Findings whose lines fall outside the PR's diff are surfaced in the review body so the API call doesn't 422.
+The PR author can mark each individual line comment as resolved as they fix it. That's standard GitHub PR review behavior, and works because we post through the reviews API rather than as plain issue comments or check annotations. The review carries no top-level summary body — severity already shows on each line comment and on the check-run conclusion, so a duplicate "### Blick review" block on the conversation tab would just stack up one entry per push. Findings whose lines fall outside the PR's diff are surfaced in the per-(scope, review) check-run summary instead.
 
 It's also worth scoping the workflow to PRs from branches inside the repository (`if: github.event.pull_request.head.repo.full_name == github.repository`). Forked PRs don't have access to repo secrets and shouldn't be reviewed by an LLM agent that can read the codebase before the change is trusted.
 

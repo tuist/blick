@@ -4,16 +4,14 @@
 //!
 //! Submodules:
 //! - [`context`] resolves repo / head SHA / PR from CLI args + env
-//! - [`dedupe`]  drops findings that were already posted on a prior review
+//! - [`dedupe`]  drops inline findings already posted on a prior review
 //! - [`gh`]      shells out to the `gh` CLI for API calls
 //! - [`notice`]  builds the "didn't run" notice body
-//! - [`payload`] massages review payloads when GitHub rejects parts of them
 
 mod context;
 mod dedupe;
 mod gh;
 mod notice;
-mod payload;
 
 use std::path::Path;
 
@@ -25,7 +23,6 @@ use self::context::{PublishContext, resolve_context, workflow_run_url};
 use self::dedupe::{DedupeOutcome, dedupe_review_payload};
 use self::gh::gh_api_post;
 use self::notice::build_review_failed_notice;
-use self::payload::strip_inline_comments;
 
 #[derive(Debug, Default)]
 pub struct PublishArgs {
@@ -112,7 +109,7 @@ fn post_pr_review(ctx: &PublishContext, run_dir: &Path) -> Result<(), BlickError
             eprintln!("ℹ no findings; skipping PR review post (check runs convey the pass status)");
             Ok(())
         }
-        Ok(_) => post_review_with_inline_fallback(ctx, run_dir, pr),
+        Ok(_) => post_inline_review(ctx, run_dir, pr),
         Err(err) => {
             eprintln!(
                 "⚠ could not count findings ({err}); skipping PR review post but check runs are already up"
@@ -122,11 +119,13 @@ fn post_pr_review(ctx: &PublishContext, run_dir: &Path) -> Result<(), BlickError
     }
 }
 
-fn post_review_with_inline_fallback(
-    ctx: &PublishContext,
-    run_dir: &Path,
-    pr: u64,
-) -> Result<(), BlickError> {
+/// Post the run's in-diff findings as inline review comments on the PR.
+/// The review object carries no top-level body — out-of-diff findings
+/// surface in the per-`(scope, review)` check-run summary instead, which
+/// keeps the PR conversation tab from accumulating one summary entry per
+/// push as the same PR is re-reviewed. See [`render::github_review`] for
+/// the rationale at the rendering layer.
+fn post_inline_review(ctx: &PublishContext, run_dir: &Path, pr: u64) -> Result<(), BlickError> {
     let render_ctx = RenderContext {
         head_sha: Some(&ctx.head_sha),
         commit_sha: Some(&ctx.head_sha),
@@ -143,28 +142,13 @@ fn post_review_with_inline_fallback(
     let review = match dedupe_review_payload(&review, &prior)? {
         DedupeOutcome::Skip => {
             eprintln!(
-                "ℹ every finding was already posted on a prior blick review; skipping PR review post"
+                "ℹ no new in-diff findings to post on #{pr}; skipping PR review (out-of-diff findings appear in check-run summaries)"
             );
             return Ok(());
         }
         DedupeOutcome::Post(payload) => payload,
     };
-    match gh_api_post(&endpoint, &review) {
-        Ok(()) => {
-            eprintln!("✓ posted PR review on #{pr}");
-            Ok(())
-        }
-        Err(BlickError::Api(msg)) if msg.contains("Line could not be resolved") => {
-            // GitHub rejected at least one inline comment because its line
-            // isn't in the PR diff as GitHub computes it. Retry without
-            // inline comments — those findings are folded into the body —
-            // so we still post *something* rather than dropping the review.
-            eprintln!("⚠ inline comments rejected ({msg}); retrying without them");
-            let fallback = strip_inline_comments(&review)?;
-            gh_api_post(&endpoint, &fallback)?;
-            eprintln!("✓ posted PR review on #{pr} (without inline comments)");
-            Ok(())
-        }
-        Err(err) => Err(err),
-    }
+    gh_api_post(&endpoint, &review)?;
+    eprintln!("✓ posted PR review on #{pr}");
+    Ok(())
 }
