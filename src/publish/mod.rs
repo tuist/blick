@@ -119,6 +119,12 @@ fn post_pr_review(ctx: &PublishContext, run_dir: &Path) -> Result<(), BlickError
     }
 }
 
+/// Post the run's in-diff findings as inline review comments on the PR.
+/// The review object carries no top-level body — out-of-diff findings
+/// surface in the per-`(scope, review)` check-run summary instead, which
+/// keeps the PR conversation tab from accumulating one summary entry per
+/// push as the same PR is re-reviewed. See [`render::github_review`] for
+/// the rationale at the rendering layer.
 fn post_inline_review(ctx: &PublishContext, run_dir: &Path, pr: u64) -> Result<(), BlickError> {
     let render_ctx = RenderContext {
         head_sha: Some(&ctx.head_sha),
