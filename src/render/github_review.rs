@@ -34,6 +34,9 @@ pub(super) fn render_github_review(
         let index = DiffLineIndex::from_unified(&record.diff);
 
         for finding in &record.report.findings {
+            // Findings without a line — and ones whose line isn't in the
+            // PR diff — can't be anchored as inline comments; they
+            // surface in the per-record check-run summary instead.
             let Some(line) = finding.line else {
                 continue;
             };

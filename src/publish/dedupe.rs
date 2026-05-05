@@ -27,8 +27,6 @@ pub(super) fn dedupe_review_payload(
     payload: &str,
     prior: &[InlineCommentKey],
 ) -> Result<DedupeOutcome, BlickError> {
-    let prior_set: HashSet<&InlineCommentKey> = prior.iter().collect();
-
     let mut value: Value = serde_json::from_str(payload)
         .map_err(|err| BlickError::Api(format!("review payload is not valid JSON: {err}")))?;
 
@@ -37,6 +35,21 @@ pub(super) fn dedupe_review_payload(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+
+    if original_comments.is_empty() {
+        // Nothing to post — every finding was either out-of-diff (which
+        // surfaces in the per-record check-run summary) or the run had no
+        // findings at all.
+        return Ok(DedupeOutcome::Skip);
+    }
+
+    if prior.is_empty() {
+        // Common first-run case: skip the filter loop and re-serialization
+        // and hand back the payload as-is.
+        return Ok(DedupeOutcome::Post(payload.to_owned()));
+    }
+
+    let prior_set: HashSet<&InlineCommentKey> = prior.iter().collect();
     let original_count = original_comments.len();
     let kept: Vec<Value> = original_comments
         .into_iter()

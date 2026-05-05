@@ -52,12 +52,19 @@ pub fn fetch_last_reviewed_sha(repo: &str, pr: u64) -> Result<Option<String>, Bl
 /// has a check run whose name starts with `blick / `. The check run's own
 /// `head_sha` equals the commit SHA, so we don't need a separate marker
 /// field — the commit-level association is the marker.
+///
+/// Worst case this is one `check-runs` API call per PR commit, so we cap
+/// the probe depth: blick is virtually always found on or near the head
+/// commit, and a deep probe on a force-pushed PR with no prior blick run
+/// would just be wasted budget. If we exhaust the cap without a hit, the
+/// caller falls back to the legacy review-body marker before giving up.
 fn fetch_last_reviewed_sha_from_check_runs(
     repo: &str,
     pr: u64,
 ) -> Result<Option<String>, BlickError> {
+    const MAX_COMMITS_TO_PROBE: usize = 25;
     let commits = fetch_pr_commit_shas(repo, pr)?;
-    for sha in commits.iter().rev() {
+    for sha in commits.iter().rev().take(MAX_COMMITS_TO_PROBE) {
         let runs = fetch_check_runs_for_ref(repo, sha)?;
         if runs.iter().any(is_blick_check_run) {
             return Ok(Some(sha.clone()));
@@ -67,8 +74,12 @@ fn fetch_last_reviewed_sha_from_check_runs(
 }
 
 fn fetch_pr_commit_shas(repo: &str, pr: u64) -> Result<Vec<String>, BlickError> {
-    // GitHub caps PR commits at 250; one page of 100 covers the common case
-    // and a couple more covers everything the API will ever return.
+    // GitHub caps PR commits at 250 (`/pulls/{n}/commits` truncates beyond
+    // that), so 3 pages × 100 covers the entire API response. We don't
+    // need to walk every commit anyway — the caller probes newest-first
+    // up to its own depth cap — but fetching the full list keeps
+    // pagination logic local rather than threading the cap into the
+    // request loop.
     const MAX_PAGES: u32 = 3;
     let mut all = Vec::new();
     let mut page = 1u32;
