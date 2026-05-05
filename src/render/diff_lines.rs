@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Map of file path → set of line numbers (in the *new* version of the file)
 /// that appear in the diff hunks. Findings whose `(file, line)` is in this
 /// set can be safely posted as inline review comments; ones outside the set
-/// must go in the review body instead.
+/// are surfaced in the per-record check-run summary instead.
 #[derive(Debug, Default, Clone)]
 pub struct DiffLineIndex {
     files: BTreeMap<String, BTreeSet<u64>>,

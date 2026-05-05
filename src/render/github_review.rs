@@ -1,23 +1,21 @@
 //! `POST /repos/.../pulls/{n}/reviews` payload.
 //!
-//! Bundles every finding in a run into a single review with line comments
-//! the PR author can mark resolved. Findings whose lines aren't in the PR
-//! diff (per GitHub's view of it) are folded into the review body so they
-//! aren't dropped silently.
+//! Bundles every in-diff finding in a run into a single review with line
+//! comments the PR author can mark resolved. Out-of-diff findings (the
+//! agent commented on context it read) are surfaced through the
+//! per-record check-run summary instead — see [`super::check_run`] — so
+//! the conversation tab doesn't accumulate one summary post per push.
 
 use serde_json::{Value, json};
 
-use crate::config::Severity;
 use crate::error::BlickError;
-use crate::review::Finding;
 use crate::run_record::TaskRecord;
 
+use super::RenderContext;
 use super::badges::severity_badge;
 use super::details::agent_instructions;
 use super::diff_lines::DiffLineIndex;
-use super::markers::{LAST_REVIEWED_MARKER_PREFIX, LAST_REVIEWED_MARKER_SUFFIX};
 use super::origin::origin_label;
-use super::{RenderContext, count_findings};
 
 const BLICK_FOOTER_LINK: &str = "[Blick](https://github.com/tuist/blick)";
 
@@ -30,14 +28,18 @@ pub(super) fn render_github_review(
     })?;
 
     let mut comments: Vec<Value> = Vec::new();
-    let mut out_of_diff: Vec<&Finding> = Vec::new();
-    let total_findings = count_findings(records);
 
     for record in records {
         let origin = origin_label(&record.scope_label, &record.review_name);
         let index = DiffLineIndex::from_unified(&record.diff);
 
         for finding in &record.report.findings {
+            let Some(line) = finding.line else {
+                continue;
+            };
+            if !index.contains(&finding.file, line) {
+                continue;
+            }
             let body = format!(
                 "{} **{}**\n\n{}\n\n{}\n\n— {} · `{}` review",
                 severity_badge(finding.severity),
@@ -47,95 +49,35 @@ pub(super) fn render_github_review(
                 BLICK_FOOTER_LINK,
                 origin,
             );
-            match finding.line {
-                Some(line) if index.contains(&finding.file, line) => {
-                    comments.push(json!({
-                        "path": finding.file,
-                        "line": line,
-                        "side": "RIGHT",
-                        "body": body,
-                    }));
-                }
-                _ => out_of_diff.push(finding),
-            }
+            comments.push(json!({
+                "path": finding.file,
+                "line": line,
+                "side": "RIGHT",
+                "body": body,
+            }));
         }
     }
 
-    let mut body = build_review_body(records, total_findings, &out_of_diff);
-    body.push_str("\n\n");
-    body.push_str(LAST_REVIEWED_MARKER_PREFIX);
-    body.push_str(commit_sha);
-    body.push_str(LAST_REVIEWED_MARKER_SUFFIX);
-    let event = pick_review_event(records, total_findings);
-
+    // Body intentionally empty: severity is already encoded on each inline
+    // comment and on the check-run conclusion, so a `### Blick review`
+    // summary block just duplicates information and stacks up on the
+    // conversation tab as a separate timeline entry per push. `event` is
+    // always `COMMENT` for the same reason — a blocking review state is
+    // redundant with the high-severity check-run conclusion.
     let payload = json!({
         "commit_id": commit_sha,
-        "event": event,
-        "body": body,
+        "event": "COMMENT",
+        "body": "",
         "comments": comments,
     });
     Ok(serde_json::to_string_pretty(&payload).expect("serializable"))
 }
 
-/// `REQUEST_CHANGES` only when there's at least one high-severity finding;
-/// otherwise `COMMENT` so the PR isn't blocked on a pile of low-severity
-/// suggestions.
-fn pick_review_event(records: &[TaskRecord], total_findings: usize) -> &'static str {
-    if total_findings == 0 {
-        "COMMENT"
-    } else if records
-        .iter()
-        .flat_map(|r| r.report.findings.iter())
-        .any(|f| f.severity == Severity::High)
-    {
-        "REQUEST_CHANGES"
-    } else {
-        "COMMENT"
-    }
-}
-
-fn build_review_body(
-    records: &[TaskRecord],
-    total_findings: usize,
-    out_of_diff: &[&Finding],
-) -> String {
-    let header = if total_findings == 0 {
-        "### Blick review\n\nNo findings.".to_owned()
-    } else {
-        format!(
-            "### Blick review\n\n{} finding{} across {} review{}.",
-            total_findings,
-            if total_findings == 1 { "" } else { "s" },
-            records.len(),
-            if records.len() == 1 { "" } else { "s" }
-        )
-    };
-
-    let mut body = header;
-
-    if !out_of_diff.is_empty() {
-        body.push_str("\n\n#### Findings outside this PR's diff\n");
-        for finding in out_of_diff {
-            let location = match finding.line {
-                Some(line) => format!("`{}:{line}`", finding.file),
-                None => format!("`{}`", finding.file),
-            };
-            body.push_str(&format!(
-                "- {} {} - {}\n",
-                severity_badge(finding.severity),
-                location,
-                finding.title
-            ));
-        }
-    }
-
-    body
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::ReviewReport;
+    use crate::config::Severity;
+    use crate::review::{Finding, ReviewReport};
 
     fn record_with_findings(findings: Vec<Finding>) -> TaskRecord {
         TaskRecord {
@@ -181,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_inline_comments_and_body_overflow() {
+    fn renders_inline_comments_for_in_diff_findings() {
         let record =
             record_with_findings(vec![medium_finding_in_diff(), low_finding_out_of_diff()]);
         let json = render_github_review(
@@ -192,21 +134,57 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(json.contains("\"commit_id\": \"deadbeef\""));
-        assert!(json.contains("\"path\": \"src/main.rs\""));
-        assert!(json.contains("\"line\": 2"));
-        // Inline comment uses the P2 (medium) priority badge and links to Blick.
-        assert!(json.contains("P2-yellow"));
-        assert!(json.contains("[Blick]"));
-        // Inline comments embed agent instructions in a collapsed <details>.
-        assert!(json.contains("Instructions for AI agents"));
-        assert!(json.contains("src/main.rs:2"));
-        // Out-of-diff finding ends up in the review body.
-        assert!(json.contains("Findings outside this PR"));
-        assert!(json.contains("docs/old.md"));
-        // Body carries the last-reviewed marker so future runs can do
-        // incremental reviews against the SHA we just reviewed.
-        assert!(json.contains("blick:last-reviewed=deadbeef"));
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["commit_id"], "deadbeef");
+        assert_eq!(value["event"], "COMMENT");
+        assert_eq!(value["body"], "");
+        let comments = value["comments"].as_array().unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0]["path"], "src/main.rs");
+        assert_eq!(comments[0]["line"], 2);
+        let body = comments[0]["body"].as_str().unwrap();
+        assert!(body.contains("P2-yellow"));
+        assert!(body.contains("[Blick]"));
+        assert!(body.contains("Instructions for AI agents"));
+    }
+
+    #[test]
+    fn out_of_diff_findings_are_dropped_from_the_review() {
+        // Out-of-diff findings render via per-record check runs now; the
+        // PR review payload should only contain in-diff inline comments.
+        let record = record_with_findings(vec![low_finding_out_of_diff()]);
+        let json = render_github_review(
+            &[record],
+            RenderContext {
+                head_sha: Some("deadbeef"),
+                commit_sha: None,
+            },
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["body"], "");
+        assert!(value["comments"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn always_uses_comment_event_even_with_high_severity() {
+        let record = record_with_findings(vec![Finding {
+            severity: Severity::High,
+            file: "src/main.rs".into(),
+            line: Some(2),
+            title: "Critical".into(),
+            body: "...".into(),
+        }]);
+        let json = render_github_review(
+            &[record],
+            RenderContext {
+                head_sha: Some("deadbeef"),
+                commit_sha: None,
+            },
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["event"], "COMMENT");
     }
 
     #[test]
@@ -221,29 +199,5 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, BlickError::Config(_)));
-    }
-
-    #[test]
-    fn high_severity_triggers_request_changes() {
-        let record = record_with_findings(vec![Finding {
-            severity: Severity::High,
-            file: "src/main.rs".into(),
-            line: Some(2),
-            title: "Critical".into(),
-            body: "…".into(),
-        }]);
-        assert_eq!(pick_review_event(&[record], 1), "REQUEST_CHANGES");
-    }
-
-    #[test]
-    fn medium_only_stays_a_plain_comment() {
-        let record = record_with_findings(vec![medium_finding_in_diff()]);
-        assert_eq!(pick_review_event(&[record], 1), "COMMENT");
-    }
-
-    #[test]
-    fn no_findings_stays_a_plain_comment() {
-        let record = record_with_findings(vec![]);
-        assert_eq!(pick_review_event(&[record], 0), "COMMENT");
     }
 }

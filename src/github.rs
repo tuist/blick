@@ -1,8 +1,12 @@
 //! Thin GitHub helpers built on top of the `gh` CLI.
 //!
-//! Today this is just enough to look up the SHA blick last reviewed on a
-//! pull request — encoded as an HTML-comment marker in the review body — so
-//! subsequent runs can review only what changed since.
+//! Looks up the SHA blick last reviewed on a PR (so subsequent runs can
+//! focus on changes since), and the bot's prior inline comments (so we
+//! can dedupe findings). The "last-reviewed" lookup walks the PR's
+//! commits newest-first and returns the SHA of the first one with a
+//! blick-authored check run, falling back to the legacy
+//! `<!-- blick:last-reviewed=<sha> -->` marker on review bodies for PRs
+//! reviewed before the marker moved out of the body.
 
 use std::process::Command;
 
@@ -11,19 +15,28 @@ use serde_json::Value;
 use crate::error::BlickError;
 use crate::render::parse_last_reviewed_marker;
 
-/// Header every blick PR review starts with — used as a soft signature so we
-/// only trust markers from reviews blick itself authored, not arbitrary
-/// reviewers who might paste a marker into their own comment to manipulate
-/// the incremental base.
+/// Header every legacy blick PR review body started with — used as a soft
+/// signature for the back-compat lookup path so arbitrary reviewers can't
+/// poison the incremental base by pasting a marker into their own comment.
 const BLICK_REVIEW_HEADER: &str = "### Blick review";
 
-/// Fetch the most recent `blick:last-reviewed=<sha>` SHA from a prior
-/// blick-authored review on the given PR. Returns `None` when no such
-/// review exists. Reviews from other authors are ignored even if their
-/// body happens to contain a marker.
-pub fn fetch_last_reviewed_sha(repo: &str, pr: u64) -> Result<Option<String>, BlickError> {
-    let reviews = fetch_all_reviews(repo, pr)?;
+/// Prefix on every blick check-run name (see `render::check_run`). Used as
+/// a soft signature when scanning a commit's check runs for our own.
+const BLICK_CHECK_RUN_NAME_PREFIX: &str = "blick / ";
 
+/// Fetch the most recent SHA blick reviewed on the given PR. Returns
+/// `None` when there is no prior blick review.
+///
+/// Walks the PR's commits newest-first looking for a blick-authored check
+/// run on each. If none exist (e.g. an older PR reviewed before the
+/// marker moved to check runs), falls back to parsing the legacy
+/// `<!-- blick:last-reviewed=<sha> -->` marker out of prior review bodies.
+pub fn fetch_last_reviewed_sha(repo: &str, pr: u64) -> Result<Option<String>, BlickError> {
+    if let Some(sha) = fetch_last_reviewed_sha_from_check_runs(repo, pr)? {
+        return Ok(Some(sha));
+    }
+
+    let reviews = fetch_all_reviews(repo, pr)?;
     // GitHub returns reviews in chronological order; walk newest-first so the
     // first marker we hit is the most recent reviewed SHA.
     Ok(reviews.iter().rev().find_map(|review| {
@@ -33,6 +46,70 @@ pub fn fetch_last_reviewed_sha(repo: &str, pr: u64) -> Result<Option<String>, Bl
         }
         parse_last_reviewed_marker(body)
     }))
+}
+
+/// Walk the PR's commits newest-first; return the first commit's SHA that
+/// has a check run whose name starts with `blick / `. The check run's own
+/// `head_sha` equals the commit SHA, so we don't need a separate marker
+/// field — the commit-level association is the marker.
+fn fetch_last_reviewed_sha_from_check_runs(
+    repo: &str,
+    pr: u64,
+) -> Result<Option<String>, BlickError> {
+    let commits = fetch_pr_commit_shas(repo, pr)?;
+    for sha in commits.iter().rev() {
+        let runs = fetch_check_runs_for_ref(repo, sha)?;
+        if runs.iter().any(is_blick_check_run) {
+            return Ok(Some(sha.clone()));
+        }
+    }
+    Ok(None)
+}
+
+fn fetch_pr_commit_shas(repo: &str, pr: u64) -> Result<Vec<String>, BlickError> {
+    // GitHub caps PR commits at 250; one page of 100 covers the common case
+    // and a couple more covers everything the API will ever return.
+    const MAX_PAGES: u32 = 3;
+    let mut all = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let raw = gh_api_get(&format!(
+            "repos/{repo}/pulls/{pr}/commits?per_page=100&page={page}"
+        ))?;
+        let batch: Vec<Value> = serde_json::from_str(&raw)
+            .map_err(|err| BlickError::Api(format!("failed to parse PR commits JSON: {err}")))?;
+        let len = batch.len();
+        for c in &batch {
+            if let Some(sha) = c.get("sha").and_then(Value::as_str) {
+                all.push(sha.to_owned());
+            }
+        }
+        if len < 100 || page >= MAX_PAGES {
+            break;
+        }
+        page += 1;
+    }
+    Ok(all)
+}
+
+fn fetch_check_runs_for_ref(repo: &str, sha: &str) -> Result<Vec<Value>, BlickError> {
+    let raw = gh_api_get(&format!(
+        "repos/{repo}/commits/{sha}/check-runs?per_page=100"
+    ))?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|err| BlickError::Api(format!("failed to parse check-runs JSON: {err}")))?;
+    Ok(value
+        .get("check_runs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+fn is_blick_check_run(run: &Value) -> bool {
+    run.get("name")
+        .and_then(Value::as_str)
+        .map(|n| n.starts_with(BLICK_CHECK_RUN_NAME_PREFIX))
+        .unwrap_or(false)
 }
 
 fn is_blick_authored(review: &Value, body: &str) -> bool {
@@ -256,6 +333,18 @@ mod tests {
         });
         let key = extract_blick_comment_key(&comment).expect("should extract via original_line");
         assert_eq!(key.line, 10);
+    }
+
+    #[test]
+    fn recognizes_blick_check_run_by_name_prefix() {
+        let run = json!({"name": "blick / src/web · security"});
+        assert!(is_blick_check_run(&run));
+    }
+
+    #[test]
+    fn ignores_non_blick_check_runs() {
+        let run = json!({"name": "ci / build"});
+        assert!(!is_blick_check_run(&run));
     }
 
     #[test]

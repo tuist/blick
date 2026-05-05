@@ -23,11 +23,12 @@ pub(super) fn resolve_base(scopes: &[ScopeConfig], cli_base: Option<&str>) -> St
         .unwrap_or_else(|| "HEAD".to_owned())
 }
 
-/// Look up the SHA of the previous blick review on this PR (encoded in a
-/// hidden marker on the review body) so we can ask the agent to focus on
-/// changes since. Independent of `--base`: the full PR diff is still sent
-/// as context. Returns `None` when there's no PR context, no prior review,
-/// or the SHA isn't reachable in the local clone.
+/// Look up the SHA of the previous blick review on this PR (recovered
+/// from blick-authored check runs on prior commits, with a back-compat
+/// fallback to the legacy review-body marker) so we can ask the agent to
+/// focus on changes since. Independent of `--base`: the full PR diff is
+/// still sent as context. Returns `None` when there's no PR context, no
+/// prior review, or the SHA isn't reachable in the local clone.
 pub(super) fn resolve_focus_base(repo_root: &Path) -> Option<String> {
     let (repo, pr) = detect_pr_context()?;
 
