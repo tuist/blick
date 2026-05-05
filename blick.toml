@@ -11,12 +11,24 @@ name = "rust-best-practices"
 source = "apollographql/skills"
 subpath = "skills/rust-best-practices"
 
+[[skills]]
+name = "conservative-review"
+source = "local"
+
 [[reviews]]
 name = "default"
-skills = ["rust-best-practices"]
+skills = ["rust-best-practices", "conservative-review"]
 prompt = """
 Focus on Rust correctness, async/await soundness, error handling, and
 public-API surface changes. Skip style nits since clippy and rustfmt cover those.
+
+Be conservative in what you report:
+- Do not flag "inconsistencies" between similar code blocks unless you can demonstrate
+  they produce incorrect behavior. Similar code often serves different purposes.
+- Do not report "potential" issues that require practically impossible conditions
+  (e.g., integer overflows where values are bounded by realistic constraints).
+- Avoid pedantic suggestions about error handling symmetry between unrelated operations.
+- If code was recently changed, check whether your suggestion might be based on a stale diff.
 """
 
 [learn]
