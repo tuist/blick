@@ -15,8 +15,13 @@ subpath = "skills/rust-best-practices"
 name = "default"
 skills = ["rust-best-practices"]
 prompt = """
-Focus on Rust correctness, async/await soundness, error handling, and
-public-API surface changes. Skip style nits since clippy and rustfmt cover those.
+Focus on Rust correctness, async/await soundness, and public-API surface changes.
+Skip style nits since clippy and rustfmt cover those.
+
+Error handling: only flag concrete bugs (unhandled Results, panics in async, broken error chains).
+Do NOT flag stylistic asymmetries or request defensive fallbacks for theoretical edge cases.
+
+Test coverage: before suggesting a test is missing, search for existing tests that may already cover the case.
 """
 
 [learn]
