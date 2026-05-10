@@ -33,6 +33,7 @@ fn parse_agent_kind(raw: String) -> Option<AgentKind> {
         "claude" => Some(AgentKind::Claude),
         "codex" => Some(AgentKind::Codex),
         "opencode" => Some(AgentKind::Opencode),
+        "gemini" => Some(AgentKind::Gemini),
         _ => None,
     }
 }
@@ -87,6 +88,10 @@ mod tests {
         assert!(matches!(
             parse_agent_kind("opencode".into()),
             Some(AgentKind::Opencode)
+        ));
+        assert!(matches!(
+            parse_agent_kind("gemini".into()),
+            Some(AgentKind::Gemini)
         ));
     }
 

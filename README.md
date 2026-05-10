@@ -212,15 +212,16 @@ A PR touching both directories runs the iOS technical review with claude on the 
 
 ## 🤖 Agents
 
-Three agent kinds are supported:
+Four agent kinds are supported:
 
 | `kind`     | Backing CLI                       | Default model                  |
 |------------|-----------------------------------|--------------------------------|
 | `claude`   | [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) | `anthropic/claude-sonnet-4-5` |
 | `codex`    | [OpenAI Codex CLI](https://github.com/openai/codex) | `openai/gpt-5`                 |
 | `opencode` | [opencode](https://opencode.ai)   | `anthropic/claude-sonnet-4-5` |
+| `gemini`   | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `google/gemini-2.5-pro`       |
 
-Models use the [models.dev](https://models.dev) `provider/model` syntax. `blick` strips the prefix when passing to adapters that don't accept it (Claude Code, Codex) and passes the full id verbatim to ones that do (opencode).
+Models use the [models.dev](https://models.dev) `provider/model` syntax. `blick` strips the prefix when passing to adapters that don't accept it (Claude Code, Codex, Gemini) and passes the full id verbatim to ones that do (opencode).
 
 Override the binary or pass extra flags when needed:
 
@@ -231,7 +232,7 @@ binary = "/opt/homebrew/bin/claude"
 args = ["--dangerously-skip-permissions"]
 ```
 
-The agent CLI is responsible for its own auth (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `opencode auth login`, etc.). `blick` does not store API keys.
+The agent CLI is responsible for its own auth (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `opencode auth login`, etc.). `blick` does not store API keys.
 
 ### Overriding from the command line or environment
 

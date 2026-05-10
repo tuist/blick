@@ -17,10 +17,11 @@ impl CliAgentsRunner {
         let cli = match config.kind {
             AgentKind::Claude => CliName::Claude,
             AgentKind::Codex => CliName::Codex,
-            AgentKind::Opencode => {
-                return Err(BlickError::Config(
-                    "opencode is not handled by the cli-agents adapter".to_owned(),
-                ));
+            AgentKind::Opencode | AgentKind::Gemini => {
+                return Err(BlickError::Config(format!(
+                    "{} is not handled by the cli-agents adapter",
+                    config.kind.as_str()
+                )));
             }
         };
         Ok(Self {
