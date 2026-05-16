@@ -13,6 +13,8 @@ pub enum AgentKind {
     Codex,
     #[value(name = "opencode")]
     Opencode,
+    #[value(name = "gemini")]
+    Gemini,
 }
 
 impl AgentKind {
@@ -21,6 +23,7 @@ impl AgentKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Gemini => "gemini",
         }
     }
 
@@ -31,6 +34,7 @@ impl AgentKind {
             Self::Claude => Some("anthropic/claude-sonnet-4-5"),
             Self::Codex => Some("openai/gpt-5"),
             Self::Opencode => Some("anthropic/claude-sonnet-4-5"),
+            Self::Gemini => Some("google/gemini-2.5-pro"),
         }
     }
 }
@@ -53,7 +57,12 @@ mod tests {
 
     #[test]
     fn as_str_round_trips_through_serde() {
-        for k in [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode] {
+        for k in [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Opencode,
+            AgentKind::Gemini,
+        ] {
             let json = serde_json::to_string(&k).unwrap();
             assert_eq!(json, format!("\"{}\"", k.as_str()));
         }
@@ -66,5 +75,6 @@ mod tests {
         assert!(AgentKind::Claude.default_model().is_some());
         assert!(AgentKind::Codex.default_model().is_some());
         assert!(AgentKind::Opencode.default_model().is_some());
+        assert!(AgentKind::Gemini.default_model().is_some());
     }
 }

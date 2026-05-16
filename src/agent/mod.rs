@@ -1,3 +1,4 @@
+mod gemini;
 mod opencode;
 mod via_cli_agents;
 
@@ -29,6 +30,7 @@ pub fn runner_for(config: &AgentConfig) -> Result<Box<dyn AgentRunner>, BlickErr
             Ok(Box::new(via_cli_agents::CliAgentsRunner::new(config)?))
         }
         AgentKind::Opencode => Ok(Box::new(opencode::OpencodeRunner::new(config))),
+        AgentKind::Gemini => Ok(Box::new(gemini::GeminiRunner::new(config))),
     }
 }
 

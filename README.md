@@ -4,7 +4,7 @@
 
 # blick
 
-`blick` is a code review agent that drives the coding CLI you already use (`claude`, `codex`, or `opencode`) over your repository's diff, then publishes the findings as resolvable PR review comments and per-review check runs.
+`blick` is a code review agent that drives the coding CLI you already use (`claude`, `codex`, `opencode`, or `gemini`) over your repository's diff, then publishes the findings as resolvable PR review comments and per-review check runs.
 
 It's designed for monorepos: any subdirectory can declare its own `blick.toml` to define its own reviews, agent, and skills, and changes are routed to the nearest scope automatically.
 
@@ -43,7 +43,7 @@ To install the released CLI on any machine:
 mise use -g github:tuist/blick
 ```
 
-`blick` itself is just one binary. The agent CLI it drives (`claude`, `codex`, or `opencode`) needs to be on the `PATH`; install whichever one(s) you use the same way (most are available through `mise`, `npm`, or `brew`).
+`blick` itself is just one binary. The agent CLI it drives (`claude`, `codex`, `opencode`, or `gemini`) needs to be on the `PATH`; install whichever one(s) you use the same way (most are available through `mise`, `npm`, or `brew`).
 
 ## ⚡ Quick start
 
@@ -212,15 +212,16 @@ A PR touching both directories runs the iOS technical review with claude on the 
 
 ## 🤖 Agents
 
-Three agent kinds are supported:
+Four agent kinds are supported:
 
 | `kind`     | Backing CLI                       | Default model                  |
 |------------|-----------------------------------|--------------------------------|
 | `claude`   | [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) | `anthropic/claude-sonnet-4-5` |
 | `codex`    | [OpenAI Codex CLI](https://github.com/openai/codex) | `openai/gpt-5`                 |
 | `opencode` | [opencode](https://opencode.ai)   | `anthropic/claude-sonnet-4-5` |
+| `gemini`   | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `google/gemini-2.5-pro`       |
 
-Models use the [models.dev](https://models.dev) `provider/model` syntax. `blick` strips the prefix when passing to adapters that don't accept it (Claude Code, Codex) and passes the full id verbatim to ones that do (opencode).
+Models use the [models.dev](https://models.dev) `provider/model` syntax. `blick` strips the prefix when passing to adapters that don't accept it (Claude Code, Codex, Gemini) and passes the full id verbatim to ones that do (opencode).
 
 Override the binary or pass extra flags when needed:
 
@@ -231,7 +232,7 @@ binary = "/opt/homebrew/bin/claude"
 args = ["--dangerously-skip-permissions"]
 ```
 
-The agent CLI is responsible for its own auth (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `opencode auth login`, etc.). `blick` does not store API keys.
+The agent CLI is responsible for its own auth (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `opencode auth login`, etc.). `blick` does not store API keys.
 
 ### Overriding from the command line or environment
 
