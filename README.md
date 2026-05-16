@@ -4,7 +4,7 @@
 
 # blick
 
-`blick` is a code review agent that drives the coding CLI you already use (`claude`, `codex`, or `opencode`) over your repository's diff, then publishes the findings as resolvable PR review comments and per-review check runs.
+`blick` is a code review agent that drives the coding CLI you already use (`claude`, `codex`, `opencode`, or `gemini`) over your repository's diff, then publishes the findings as resolvable PR review comments and per-review check runs.
 
 It's designed for monorepos: any subdirectory can declare its own `blick.toml` to define its own reviews, agent, and skills, and changes are routed to the nearest scope automatically.
 
@@ -43,7 +43,7 @@ To install the released CLI on any machine:
 mise use -g github:tuist/blick
 ```
 
-`blick` itself is just one binary. The agent CLI it drives (`claude`, `codex`, or `opencode`) needs to be on the `PATH`; install whichever one(s) you use the same way (most are available through `mise`, `npm`, or `brew`).
+`blick` itself is just one binary. The agent CLI it drives (`claude`, `codex`, `opencode`, or `gemini`) needs to be on the `PATH`; install whichever one(s) you use the same way (most are available through `mise`, `npm`, or `brew`).
 
 ## ⚡ Quick start
 
