@@ -227,10 +227,14 @@ Override the binary or pass extra flags when needed:
 
 ```toml
 [agent]
-kind = "claude"
-binary = "/opt/homebrew/bin/claude"
-args = ["--dangerously-skip-permissions"]
+kind = "opencode"
+binary = "/opt/homebrew/bin/opencode"
+args = ["--debug"]
 ```
+
+`binary` is forwarded to every kind. `args` is forwarded to `opencode` and `gemini` today; for `claude` and `codex` the underlying [`cli-agents`](https://github.com/skoppisetty/cli-agents-rs) crate does not yet expose an `extra_args` hook, so blick rejects the config with a clear error instead of silently dropping the flags.
+
+Note that blick already passes `--dangerously-skip-permissions` (and equivalents) to every agent on its own — `args` is for flags blick does not set itself, like `--json-schema` for Claude or `--debug` for opencode.
 
 The agent CLI is responsible for its own auth (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `opencode auth login`, etc.). `blick` does not store API keys.
 

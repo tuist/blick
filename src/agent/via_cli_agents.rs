@@ -10,6 +10,7 @@ use crate::error::BlickError;
 pub struct CliAgentsRunner {
     cli: CliName,
     model: Option<String>,
+    binary: Option<String>,
 }
 
 impl CliAgentsRunner {
@@ -24,6 +25,17 @@ impl CliAgentsRunner {
                 )));
             }
         };
+        if !config.args.is_empty() {
+            return Err(BlickError::Config(format!(
+                "`agent.args` is not yet supported for `{}`: \
+                 the upstream `cli-agents` crate does not expose an \
+                 `extra_args` field on its Claude/Codex options (verified \
+                 against 0.2.10, 0.2.11, and main). Use `kind = \"opencode\"` \
+                 or `kind = \"gemini\"` if you need to pass custom CLI flags. \
+                 Track: https://github.com/skoppisetty/cli-agents-rs",
+                config.kind.as_str()
+            )));
+        }
         Ok(Self {
             cli,
             model: config
@@ -31,6 +43,7 @@ impl CliAgentsRunner {
                 .as_deref()
                 .map(strip_provider_prefix)
                 .map(str::to_owned),
+            binary: config.binary.clone(),
         })
     }
 }
@@ -45,6 +58,7 @@ impl AgentRunner for CliAgentsRunner {
             system_prompt: Some(system_prompt.to_owned()),
             cwd: Some(cwd),
             model: self.model.clone(),
+            executable_path: self.binary.clone(),
             skip_permissions: true,
             providers: Some(ProviderOptions {
                 claude: Some(ClaudeOptions {
@@ -90,4 +104,55 @@ fn sandbox_cwd() -> Result<String, BlickError> {
     let path = std::env::temp_dir().join("blick-review");
     fs::create_dir_all(&path)?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwards_binary_override() {
+        let runner = CliAgentsRunner::new(&AgentConfig {
+            kind: AgentKind::Claude,
+            model: None,
+            binary: Some("/opt/homebrew/bin/claude".to_owned()),
+            args: Vec::new(),
+        })
+        .expect("claude config builds");
+        assert_eq!(runner.binary.as_deref(), Some("/opt/homebrew/bin/claude"));
+    }
+
+    #[test]
+    fn defaults_binary_to_none_for_cli_discovery() {
+        let runner = CliAgentsRunner::new(&AgentConfig {
+            kind: AgentKind::Claude,
+            model: None,
+            binary: None,
+            args: Vec::new(),
+        })
+        .expect("claude config builds");
+        // None tells cli-agents to discover the CLI on PATH, matching prior behavior.
+        assert!(runner.binary.is_none());
+    }
+
+    #[test]
+    fn rejects_args_until_upstream_support_lands() {
+        // The upstream `cli-agents` crate does not yet expose an `extra_args`
+        // hook for Claude/Codex. Surfacing this as a config error is friendlier
+        // than silently ignoring a documented option.
+        let result = CliAgentsRunner::new(&AgentConfig {
+            kind: AgentKind::Claude,
+            model: None,
+            binary: None,
+            args: vec!["--json-schema".to_owned(), "{}".to_owned()],
+        });
+        match result {
+            Ok(_) => panic!("args should be rejected for claude until cli-agents adds extra_args"),
+            Err(BlickError::Config(message)) => assert!(
+                message.contains("agent.args"),
+                "error should mention the offending field, got: {message}"
+            ),
+            Err(other) => panic!("expected BlickError::Config, got: {other:?}"),
+        }
+    }
 }
