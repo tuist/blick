@@ -44,8 +44,12 @@ jobs:
     strategy:
       matrix:
         include:
+          # Statically linked against musl so the binary carries no glibc
+          # version requirement and runs on any Linux, regardless of the
+          # host's glibc (a glibc build on ubuntu-24.04 stamps a hard
+          # GLIBC_2.39 requirement that fails to load on older distros).
           - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
           - runner: macos-15-intel
             target: x86_64-apple-darwin
           - runner: macos-15
@@ -69,6 +73,9 @@ jobs:
             bazel-${{ runner.os }}-
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Package release archive
         run: mise run release:package --target "${{ matrix.target }}" --version "${{ needs.detect.outputs.next-version }}"
       - name: Upload release assets
