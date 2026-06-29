@@ -86,3 +86,59 @@ jobs:
             bazel-${{ runner.os }}-
       - name: Run test suites
         run: mise run test
+
+  review:
+    name: Review
+    needs:
+      - format
+      - build
+      - test
+    # Only run on pull requests from branches in this repository. Forked pull
+    # requests do not have access to repo secrets and should not be exposed to
+    # a language model agent that can read the codebase.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v4.0.1
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+      - name: Build blick from source
+        run: cargo build --release --locked
+
+      - name: Run blick review
+        env:
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${FIREWORKS_API_KEY:-}" ]; then
+            echo "FIREWORKS_API_KEY is not set; add it to repo secrets so opencode can authenticate against Fireworks." >&2
+            exit 1
+          fi
+          ./target/release/blick review \
+            --base "origin/${{ github.event.pull_request.base.ref }}" \
+            --json --stream
+
+      - name: Publish review
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./target/release/blick publish
+
+      - name: Upload run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blick-runs
+          path: .blick/runs/
+          if-no-files-found: ignore
